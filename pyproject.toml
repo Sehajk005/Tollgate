@@ -1,0 +1,30 @@
+[project]
+name = "tollgate"
+version = "0.1.0"
+description = "Tollgate -- pre-authorization card-testing defence (Day 1 walking skeleton)"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+]
+
+[tool.pytest.ini_options]
+markers = [
+    "characterization: change-detector tests, never acceptance gates (Impl Plan v2.1 §1.2)",
+    "slow: exercises a real subprocess (durability / lock-contention tests)",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["packages*", "services*", "scripts*"]

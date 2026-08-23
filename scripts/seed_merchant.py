@@ -1,0 +1,84 @@
+"""
+python -m scripts.seed_merchant
+
+Source: Backend Schema v2 section 9 -- bootstrap step 2 (merchant + baseline
++ config v1). Day 1 scope: creates the merchant row, a fresh API key
+(printed once, never stored raw), and policy_config version 1 seeded from
+config/rules.yaml.
+"""
+
+from __future__ import annotations
+
+import json
+import secrets
+from pathlib import Path
+
+import yaml
+
+from packages.clock.clock import SystemClock
+from packages.storage.db import connect, initialize_schema
+from services.scorer.auth import hash_api_key
+
+DB_PATH = Path("tollgate.db")
+SCHEMA_PATH = Path("schema.sql")
+RULES_CONFIG_PATH = Path("config/rules.yaml")
+MERCHANT_ID = "merchant_demo"
+
+
+def main() -> None:
+    if not DB_PATH.exists():
+        initialize_schema(DB_PATH, SCHEMA_PATH)
+
+    clock = SystemClock()
+    now_ms = clock.now_ms()
+
+    raw_key = secrets.token_urlsafe(32)
+    key_hash = hash_api_key(raw_key)
+    outcome_secret_hash = hash_api_key(secrets.token_urlsafe(32))
+
+    rules_config = yaml.safe_load(RULES_CONFIG_PATH.read_text(encoding="utf-8"))
+
+    conn = connect(DB_PATH)
+    try:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO merchant (
+                merchant_id, display_name, currency, timezone,
+                api_key_hash, outcome_hmac_key_hash, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                MERCHANT_ID, "Kesar & Co. (demo)", "INR", "Asia/Kolkata",
+                key_hash, outcome_secret_hash, now_ms,
+            ),
+        )
+        row = conn.execute(
+            "SELECT COALESCE(MAX(version), 0) AS v FROM policy_config WHERE merchant_id = ?",
+            (MERCHANT_ID,),
+        ).fetchone()
+        next_version = row["v"] + 1
+        conn.execute(
+            """
+            INSERT INTO policy_config (
+                merchant_id, version, thresholds, hysteresis_gap, cooldown_seconds,
+                cusum_rho, cusum_h, cusum_bucket_s, drift_window_s, allow_auto_block,
+                auto_ceiling, k_max_entities, control_fraction, rules_config, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                MERCHANT_ID, next_version, json.dumps({}), 0.08, 300,
+                5.0, 5.0, 10, 1800, False,
+                "challenge", 10, 0.05, json.dumps(rules_config), now_ms,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    print(f"Merchant seeded: {MERCHANT_ID}")
+    print(f"API key (store this; it is not recoverable): {raw_key}")
+    print(f"policy_config version: {next_version}")
+
+
+if __name__ == "__main__":
+    main()

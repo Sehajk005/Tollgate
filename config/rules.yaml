@@ -1,0 +1,17 @@
+# Source: TRD v2.1 §6.10 -- Day 1 cold-start rule thresholds.
+# Threshold keys are named *_absolute_coldstart so a later store-relative
+# quantile swap (decisions.md, decision 16) is a visible, intentional edit
+# rather than a silent reinterpretation.
+rules:
+  r1_attempts_per_ip_60s_absolute_coldstart:
+    threshold: 20
+    window_s: 60
+    minimum_tier: throttle
+  r2_distinct_cards_per_ip_5m_absolute_coldstart:
+    threshold: 15
+    window_s: 300
+    minimum_tier: challenge
+  r3_distinct_cards_per_bin_5m_absolute_coldstart:
+    threshold: 20
+    window_s: 300
+    minimum_tier: challenge
