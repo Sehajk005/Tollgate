@@ -68,6 +68,7 @@ def _synthetic_stream(n: int = 25, spacing_ms: int = 100, ip: str = "203.0.113.5
 
 
 def _build_state(tmp_path: Path) -> ScorerState:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     db_path = tmp_path / "tollgate.db"
     spool_dir = tmp_path / "spool"
     initialize_schema(db_path, SCHEMA_PATH)
@@ -98,6 +99,15 @@ async def _run_and_collect(state: ScorerState, request, stream):
 
     driver = ReplayDriver(state, merchant_id=MERCHANT_ID)
     status = await driver.run(request, stream=stream)
+
+    # speed=0 publishes on an unbounded asyncio.Queue, which never suspends
+    # the publisher -- the whole run() call can complete without ever
+    # yielding to the event loop, so the collector task (blocked on
+    # queue.get()) hasn't had a turn to drain what was already published.
+    # One scheduling opportunity is enough: once resumed, it drains every
+    # queued item synchronously (queue.get() on a non-empty queue doesn't
+    # suspend either) and re-blocks only once the queue is actually empty.
+    await asyncio.sleep(0)
 
     collector.cancel()
     try:

@@ -16,6 +16,10 @@ htmlcov/
 spool/
 *.log
 
+# Day-2 raw dataset (43.5 MB, downloaded once by scripts/distill_baseline.py;
+# only the derived data/baseline/*.profile.json is committed)
+data/baseline/*.xlsx
+
 # Node
 node_modules/
 dist/
@@ -33,3 +37,6 @@ Thumbs.db
 
 # Worktrees (agent-managed isolated workspaces)
 .worktrees/
+
+# Skills
+.superpowers

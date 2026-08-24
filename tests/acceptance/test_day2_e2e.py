@@ -44,7 +44,7 @@ def _seed_merchant(db_path: Path) -> str:
             INSERT OR IGNORE INTO merchant (
                 merchant_id, display_name, currency, timezone,
                 api_key_hash, outcome_hmac_key_hash, created_at
-            ) VALUES ('m_e2e', 'Day2 E2E Test', 'INR', 'Asia/Kolkata', ?, ?, 0)
+            ) VALUES ('merchant_demo', 'Day2 E2E Test', 'INR', 'Asia/Kolkata', ?, ?, 0)
             """,
             (hash_api_key(raw_key), hash_api_key("outcome-secret")),
         )
@@ -54,7 +54,7 @@ def _seed_merchant(db_path: Path) -> str:
                 merchant_id, version, thresholds, hysteresis_gap, cooldown_seconds,
                 cusum_rho, cusum_h, cusum_bucket_s, drift_window_s, allow_auto_block,
                 auto_ceiling, k_max_entities, control_fraction, rules_config, created_at
-            ) VALUES ('m_e2e', 1, '{}', 0.08, 300, 5.0, 5.0, 10, 1800, 0,
+            ) VALUES ('merchant_demo', 1, '{}', 0.08, 300, 5.0, 5.0, 10, 1800, 0,
                       'challenge', 10, 0.05, '{}', 0)
             """
         )

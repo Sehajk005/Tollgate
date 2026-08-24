@@ -43,3 +43,13 @@ class InMemoryWindowStore:
                 del window[member]
 
             return WindowSnapshot(count=len(window))
+
+    def clear(self) -> None:
+        """
+        Source: Day-2 Plan Decision 36 -- Reset is required, not convenient:
+        VirtualClock cannot move backwards and windows accumulate, so
+        without this the demo (services/scorer/replay.py) runs once per
+        process. Not exercised by any Day-1 code path.
+        """
+        with self._lock:
+            self._windows.clear()

@@ -15,6 +15,15 @@ dev = [
     "pytest>=8.0",
     "httpx>=0.27",
 ]
+# Source: Day-2 Plan Step 3 -- dev-only, used exactly once by
+# scripts/distill_baseline.py to produce the committed derived profile.
+# Never imported by packages/simulator at runtime (Decision 29: "Runtime
+# simulator is stdlib + pyyaml only"; enforced by tests/acceptance/
+# test_simulator_safety.py's import-closure scan).
+data = [
+    "pandas>=2.2",
+    "openpyxl>=3.1",
+]
 
 [tool.pytest.ini_options]
 markers = [

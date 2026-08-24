@@ -136,15 +136,15 @@ Four new controls. The first is the only one that structurally changes anything.
 
 ### V1 — The legitimate half comes from a source that isn't you
 
-Baseline arrivals and amounts are **resampled from a public real-world e-commerce order dataset** (UCI *Online Retail II* or equivalent — an actual transaction log, not a generative model), rescaled to the configured store profile:
+Baseline arrivals and amounts are **resampled from a public real-world e-commerce order dataset**. **Resolved Day 2 (Decisions.md decision 29):** UCI *Online Retail II* (Chen, D., 2012; CC BY 4.0; verified 1,067,371 line-item rows, 43.5 MB xlsx, doi:10.24432/C5CG6D — an actual transaction log, not a generative model), distilled once by `scripts/distill_baseline.py` into a committed, SHA-verified, integer-only profile (`data/baseline/online_retail_ii.profile.json`) that `packages/simulator/profile.py` loads at runtime. The raw xlsx is gitignored and never committed; redistributing the derived, aggregated profile with attribution is permitted under CC BY 4.0.
 
-- Inter-arrival structure and diurnal/weekly shape: empirical, from the dataset's timestamps.
-- Amount distribution: empirical order-value distribution, rescaled to the configured AOV.
-- BIN spread: long-tailed, fitted to a published issuer share distribution; BIN *identities* remain fictional (safety constraint unchanged).
+- Inter-arrival structure and diurnal/weekly shape: empirical — 168 integer hour-of-week weights, aggregated from the dataset's own `InvoiceDate` timestamps.
+- Amount distribution: empirical order-value distribution (a 1001-point integer quantile table, GBP minor units), rescaled to the configured AOV via `amount_minor = round(q_gbp_minor × aov_minor / mean_order_value_gbp_minor)` (integer round-half-up — `packages/simulator/profile.py::rescale_to_store_aov()`).
+- BIN spread: long-tailed, fitted to a published issuer share distribution; BIN *identities* remain fictional (safety constraint unchanged) — a reserved `999xxx` prefix, disjoint from every real IIN range.
 
 The attack half stays authored. **The symmetry is now broken:** the covariance structure between attack traffic and legitimate traffic is no longer both mine. This is the countermeasure v1 was missing and it costs about three hours.
 
-*Cut fallback:* if the dataset integration is not green by end of Day 4, fall back to the v1 generative baseline **and state in the report that internal validity is not established.** Do not silently ship the generative baseline while claiming the grounding.
+*Cut fallback:* **resolved — the dataset integration is green as of Day 2** (well ahead of end-of-Day-4), so this fallback was not exercised. The generative baseline stays implemented behind the same `AmountSampler`/`ArrivalSampler` interface and remains selectable by config, but is not the default. (Impl Plan's Day-2 20:00 schedule-guard trigger is reconciled there: it governs Day 2's own schedule, not eval validity, which this end-of-Day-4 line governs — see Impl Plan §Day 2, C2.)
 
 ### V2 — Single-feature discriminability audit
 

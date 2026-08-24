@@ -8,12 +8,20 @@ for that. Update this file whenever the execution path changes.
 
 ## 1. POST /v1/score — the scoring path
 
+Source: Day-2 Plan §L Step 6 / Decisions.md decision 26. Steps 5-11 (below) moved into
+`services/scorer/scoring.py::score_attempt()` on Day 2 -- a pure extraction, no behaviour
+change (the 55 Day-1 tests are unedited proof). The route now does only auth + IP + Stopwatch
+and delegates. `services/scorer/replay.py::ReplayDriver` (§7 below) calls the same
+`score_attempt()` with its own `VirtualClock` and a seed-derived `UlidGenerator` instead of
+`state.clock`/`state.ulid` -- this is the seam that makes replay and the storefront run
+byte-identical logic.
+
 ```
-Browser / curl
-  │
-  ▼
-POST /v1/score  (services/scorer/routes_score.py:score)
-  │
+Browser / curl                              services/scorer/replay.py::ReplayDriver (§7)
+  │                                                     │
+  ▼                                                     │ clock=VirtualClock, ulid=seeded
+POST /v1/score  (services/scorer/routes_score.py:score) │
+  │                                                     │
   ├─ 1. Stopwatch() started                                packages/clock/stopwatch.py
   │
   ├─ 2. FastAPI validates the body against
@@ -28,9 +36,11 @@ POST /v1/score  (services/scorer/routes_score.py:score)
   ├─ 4. resolve_client_ip(request)                          services/scorer/net.py
   │     -- request.client.host, or X-Forwarded-For if the peer is a
   │        configured trusted edge (TRUSTED_EDGE_HOSTS)
-  │
-  ├─ 5. state.clock.now_ms()                                packages/clock/clock.py (SystemClock)
-  │     state.ulid.new()                                    packages/clock/ids.py (UlidGenerator)
+  │                                                          ▼
+  │                    services/scorer/scoring.py::score_attempt(state, merchant_id, ip, body,
+  │                                                              clock=None, ulid=None, ...)
+  ├─ 5. (clock or state.clock).now_ms()                     packages/clock/clock.py
+  │     (ulid or state.ulid).new()                          packages/clock/ids.py (UlidGenerator)
   │     -- attempt_uid minted from the clock, not wall time
   │
   ├─ 6. DayOneRules.evaluate(RuleInput(...))                packages/detect/rules.py
@@ -59,8 +69,10 @@ POST /v1/score  (services/scorer/routes_score.py:score)
   │         BEFORE the response is constructed -- this is what makes the
   │         200 response's durability guarantee true
   │
-  ├─ 11. await state.event_bus.publish({...})                packages/storage/bus.py (InProcessEventBus)
-  │      -- delivered to every subscriber's asyncio.Queue
+  ├─ 11. state.threat.observe(rules_fired, decision, ingest_ms) packages/detect/threat_state.py
+  │      -> threat_state ("calm"|"elevated"|"under_attack"|"resolved")     [Day 2, §7/§9]
+  │      await state.event_bus.publish({...})                packages/storage/bus.py
+  │      -- extended payload, see §3 below -- delivered to every subscriber's asyncio.Queue
   │
   └─ 12. return ScoreResponse(attempt_uid, decision, latency_ms)
          -- wire body carries `decision` only (decisions.md, decision 18)
@@ -102,6 +114,18 @@ GET /v1/stream  (services/scorer/routes_stream.py:stream)
        -- registers an asyncio.Queue, yields "data: {json}\n\n" per event
           forever, until the client disconnects
 ```
+
+**Day-2 payload (decisions.md decision 34).** Day 1 shipped five keys:
+`attempt_uid, decision, ip, bin, ingest_time`. Day 2 adds five more, all built in
+`services/scorer/scoring.py`: `rules_fired` (list of fired rule names),
+`feature_snapshot` (raw per-rule counts -- disclosed on this unauthenticated
+stream; accepted for the loopback-bound demo, stream auth is Day 7),
+`threat_state` (`packages/detect/threat_state.py`'s rollup output: `"calm"` |
+`"elevated"` | `"under_attack"` | `"resolved"`), `regime` (constant
+`"in_control"`), and `replay` (a mirror of `ReplayStatus.to_dict()`, or an
+idle placeholder when no replay driver is attached). `card_hash` is never
+published (Threat Model v2 addendum, decision 34). The dashboard renders
+`threat_state` verbatim -- it is never re-derived client-side.
 
 ## 4. Startup / shutdown
 
@@ -154,13 +178,159 @@ the user should open `http://localhost:5173` and `http://localhost:5174` to
 see the rendered pages directly; the underlying request path is identical to
 what was already verified.
 
-## 6. What does NOT exist yet (explicitly deferred)
+## 7. POST /v1/replay/start — the virtual-clock replay driver
+
+Source: Day-2 Plan §G / decisions.md decisions 25-27.
+
+```
+DC strip: Launch button   services/dashboard/src/App.jsx
+  │  fetch("/v1/replay/start", {tier, seed, speed, epoch_ms})
+  ▼ (Vite proxy: /v1 -> :8080)
+POST /v1/replay/start  (services/scorer/routes_replay.py:replay_start)
+  │
+  ├─ resolve_merchant_id(conn, x_tollgate_key)   -- same auth as /v1/score;
+  │     the loop below never re-authenticates per event
+  ├─ 409 if state.replay_driver.status.state == "running"
+  ├─ driver.mark_starting(request)     -- synchronous, closes the
+  │     asyncio.create_task() scheduling race against a second rapid /start
+  └─ state.replay_task = asyncio.create_task(driver.run(request))
+       -- returns 202 immediately; the loop below runs concurrently
+
+ReplayDriver.run(request, stream=None)   services/scorer/replay.py
+  │
+  ├─ epoch_ms = request.epoch_ms or state.clock.now_ms()
+  ├─ self._clock = VirtualClock(epoch_ms)                packages/clock/clock.py
+  ├─ ulid = UlidGenerator(clock=self._clock,
+  │           rng=random.Random(f"ulid:{request.seed}"))  -- deterministic attempt_uid
+  ├─ stream = stream or packages.simulator.generate.build_stream(seed, tier, hours)  [§8]
+  │
+  └─ for ev in stream:
+       ├─ if stop requested: status="stopped", return
+       ├─ self._clock.set_ms(epoch_ms + ev.t_ms)   -- virtual time IS event time;
+       │     never advance_ms(wall_delta) -- this is what A14 asserts
+       ├─ await score_attempt(state, merchant_id, ip=ev.ip,
+       │       body=ScoreRequest(**ev.to_score_request()),
+       │       clock=self._clock, ulid=ulid)              [§1]
+       ├─ if request.speed: await asyncio.sleep((ev.t_ms - prev) / 1000 / speed)
+       │     -- the ONLY wall-clock call in the loop; affects nothing the
+       │        scorer reads (speed=0 vs speed=60 produce identical
+       │        decision sequences -- A13)
+       └─ self._status updated (sent/total/virtual_time_ms) every iteration
+```
+
+`POST /v1/replay/stop` sets a cooperative flag the loop checks each iteration.
+`POST /v1/replay/reset` clears `state.window_store` (`InMemoryWindowStore.clear()`,
+new on Day 2) and `state.threat` (`ThreatRollup.clear()`) -- required, not
+convenient: without it a second `Launch` in the same process inherits stale
+window/threat state (decisions.md decision 36). `GET /v1/replay/status`
+returns the same `ReplayStatus.to_dict()` mirrored onto every SSE event's
+`replay` key. The scorer's `lifespan` (`services/scorer/app.py`) cancels any
+running replay task on shutdown.
+
+## 8. `python -m packages.simulator.generate` — the generation path
+
+Source: Day-2 Plan §F / decisions.md decisions 28-32.
+
+```
+generate.py:build_stream(seed, tier, hours, epoch_ms)   packages/simulator/generate.py
+  │
+  ├─ load_store_profile() / load_attack_tiers()          packages/simulator/profile.py
+  │     -- config/store_profile.yaml, config/attack_tiers.yaml (yaml.safe_load)
+  ├─ load_baseline_profile()                              packages/simulator/profile.py
+  │     -- data/baseline/online_retail_ii.profile.json, SHA-256-verified
+  │        against the committed .sha256 sidecar before use
+  │
+  ├─ generate_attack_episode(seed, tier, tier_config,      packages/simulator/attack.py
+  │     episode_start_ms=hours*3.6M/3, baseline_profile, aov_minor, currency)
+  │     -- SubStream(seed, f"attack:{tier}:*")  (rng.py, getrandbits-only)
+  │     -- amounts: same empirical quantile table as baseline, restricted to
+  │        amount_quantile_band's low-index range (Eval Protocol v2 §4/V2)
+  │     -> attack_items: list[RawItem], episode_id, ended_at_ms
+  │
+  ├─ generate_baseline_events(seed, hours, store_profile,  packages/simulator/baseline.py
+  │     baseline_profile, episode_windows=[(episode_start_ms,
+  │     episode_start_ms + 60_000)])   -- fixed 60s guarantee window,
+  │     independent of the attack tier's own duration (decision 31: this
+  │     is what keeps A4 and A7 both satisfiable at once)
+  │     -- SubStream(seed, "baseline:*")  -- never parameterized by tier
+  │     -> baseline_items: list[RawItem]
+  │
+  └─ merge_and_number(baseline_items, attack_items)        packages/simulator/stream.py
+       -- stable sort by t_ms; event_id/seq assigned from MERGED position only
+          (never a per-source counter -- anti-leakage checklist)
+       -> events: list[Event], labels: list[Label]
+       -> episodes: list[Episode]  (attempt_count/distinct_cards recounted
+          from the labels that reference this episode_id)
+
+CLI (__main__): writes events/labels/episodes to --out/--labels/--episodes
+as canonical JSONL (sort_keys, no spaces, ASCII, LF-only) via
+packages/simulator/stream.py::canonical_line()/write_jsonl().
+```
+
+Safety (decisions.md decision 28, `tests/acceptance/test_simulator_safety.py`,
+`-m safety`): `packages/simulator`'s transitive import closure never reaches
+`socket/ssl/http/urllib/requests/httpx/asyncio/subprocess/ftplib/smtplib/ctypes`;
+no PAN-shaped identifiers; a full generation run succeeds with `socket.socket`
+monkeypatched to raise. `scripts/distill_baseline.py` (pandas/openpyxl) lives
+outside `packages/simulator` specifically so this closure never has a reason
+to include it.
+
+## 9. Demo launch: Launch button → threat band
+
+Source: Day-2 Plan §M exit gate -- the Day-2 equivalent of §5's Day-1 walkthrough.
+Verified in a live browser session (not just the automated A16 test) on
+2026-08-24: pressed Launch (tier=easy, speed=60) against the real dev stack
+(`:8080`/`:5173`/`:5174`); the D1 threat band moved `CALM -> UNDER ATTACK` on
+screen, `ATTEMPTS · 5 MIN` and `CARDS PER IP · TOP` climbed live, and the
+ticker showed real `challenge` decisions with `rules_fired: attempts_per_ip_60s,
+distinct_cards_per_ip_5m, distinct_cards_per_bin_5m` -- all driven purely by
+the SSE stream, confirming the band is never derived client-side.
+
+```
+services/dashboard (DC strip)                services/scorer
+  │  POST /v1/replay/start {tier:"easy",           │
+  │    seed:42, speed:60, epoch_ms:0}               │
+  ▼ (Vite proxy)                                    ▼
+  202 + ReplayStatus{state:"running",...}    ReplayDriver.run() [§7] starts
+  │                                                  │  in a background asyncio.Task
+  │                                          for each ev: score_attempt() [§1]
+  │                                                  │  -> spool -> Drainer -> SQLite
+  │                                                  │  -> event_bus.publish() [§3]
+  │  EventSource("/v1/stream")                       ▼
+  ◄──────────────────────────────────── {..., threat_state, rules_fired, replay}
+  │
+  ├─ ThreatIcon + label render event.threat_state verbatim -- CALM (hollow
+  │    ring, grey) while the episode has not yet tripped a rule, then
+  │    ELEVATED (R1/throttle) or UNDER_ATTACK (R2/R3/challenge) as the
+  │    replay's attack episode fires real rule evaluations
+  ├─ ATTEMPTS · 5 MIN: count of buffered SSE events within 5 minutes of the
+  │    latest event's own ingest_time (event time, not wall time -- reads
+  │    correctly under 60x compression)
+  ├─ CARDS PER IP · TOP: max(feature_snapshot.distinct_cards_per_ip_5m) over
+  │    the buffered events
+  └─ DECLINE RATE / ENFORCEMENT: fixed "—" placeholders (Day 7 / Day 6)
+```
+
+`sqlite3 tollgate.db "select decision, count(*) from attempt_score group by
+1"` shows the same non-`allow` decisions after the drainer catches up
+(verified via `test_day2_e2e.py`'s post-drain SQLite assertion).
+
+## 10. What does NOT exist yet (explicitly deferred)
 
 - No `/v1/outcome` route (Day 7).
 - No Redis; `InMemoryWindowStore` is the only `WindowStore` backend (Day 3
   adds `RedisWindowStore` behind the same protocol).
 - No idempotency guard (`SET NX` on a payload digest) -- `payload_digest` is
   computed and stored, but nothing rejects a duplicate yet (Day 7).
-- No CUSUM / drift detection / incidents / entity resolution (Day 6).
-- No narrator, no D3/D6 dashboard screens, no design tokens (Day 8).
+- No CUSUM / drift detection / real incidents / entity resolution --
+  `packages/detect/threat_state.py`'s rollup is an explicit Day-2 stand-in
+  Day 6's incident detector replaces (Day 6).
+- No narrator, no D3/D6 dashboard screens, no design tokens, no Stream Rail
+  (Day 8).
 - No BIN metadata join -- `tier_ladder` is hardcoded `"domestic"`.
+- No `medium`/`evasive` attack tiers (`config/attack_tiers.yaml` declares
+  them `pending: "Day 4"`/`"Day 7"`); no negative-control selector, no
+  flood/kill-scorer DC toggles (Day 4 / Day 7).
+- No stream authentication -- `/v1/stream` publishes `rules_fired` and
+  `feature_snapshot` unauthenticated; accepted for the loopback-bound demo
+  (Threat Model v2 addendum, decisions.md decision 34), hardened Day 7.

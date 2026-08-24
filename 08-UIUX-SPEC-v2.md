@@ -320,6 +320,8 @@ Two of D1's four tiles changed shape in v2:
 - **Distinct cards per IP is a quantile, not a count** (TRD §6.2 — the CGNAT fix). It renders as `p99.4` with the store's own baseline quantile beneath. A raw count here would be the exact thing the architecture spent effort removing: a number meaningless without knowing whether this store sits behind carrier-grade NAT.
 - **Active enforcement renders as a fraction against the cap**: `7 / 10` with `caption` reading *"blast-radius cap"*. At `10 / 10` the tile's delta line switches to the system-state treatment, not a threat colour.
 
+**Day-2 empty-state rule (new).** A tile whose real data source does not exist yet (`DECLINE RATE` needs `/v1/outcome`, Day 7; `ENFORCEMENT` needs the Day-6 blast-radius cap) renders `—` (its caption naming the day it lights up) — **never a bare `0`**, which would read as a real, favourable measurement rather than an absent one. A tile whose data source *does* exist but whose current value is genuinely zero (e.g. `ATTEMPTS · 5 MIN` before any traffic) renders `0`. `CARDS PER IP · TOP` is a Day-2 stand-in specifically: it renders the raw count (not yet the quantile treatment above), captioned `store-relative quantile · Day 5`, and is honestly a raw number that will be reinterpreted, not replaced, once Day 5 lands.
+
 ### 6.3 Status badge (the only pill)
 
 Pill, 22px tall, `label` type, 8px horizontal padding. State wash background, state-coloured 1px border, state-coloured text. Always paired with its glyph.
@@ -471,6 +473,8 @@ Destructive variant. The cost line comes straight from `C_FP(block) × entity co
 ### 6.12 Demo control strip
 
 `--tg-surface-2`, pinned bottom, 1px top hairline, 56px tall. Controls in `label` type. Tier selector now carries four options — easy / medium / hard / **evasive**. Two separate degradation toggles, **flood** and **kill scorer**, because they demonstrate two different rungs.
+
+**Day-2 subset (Decisions.md decision 36).** Only tier selector (all four shown; `medium`/`evasive` disabled with a "Day 4"/"Day 7" label, not hidden), **Launch**, **Stop**, **Reset**, a speed selector (`0`/`1`/`60`), and the permanent chip below are built. The negative-control selector (Day 4) and the **flood**/**kill scorer** toggles above are *omitted*, not stubbed — there is no Day-2 behaviour for them to gesture at. **Reset is required, not convenient**: `VirtualClock` cannot move backwards and the window store/threat rollup both accumulate, so without Reset the demo runs once per process.
 
 The replay chip is a persistent `mono-caption`, and its copy changed:
 

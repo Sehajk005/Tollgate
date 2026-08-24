@@ -778,6 +778,8 @@ None (TRD §6.1, §6.3 already specify this).
 `record_and_read()` three times per attempt (once per rule) with different
 `space`/`metric`/`member` arguments.
 
+---
+
 ## Decision 20: `VirtualClock` never reads the wall clock at all
 
 ### Context
@@ -817,6 +819,8 @@ virtual time," not a deviation from it.
 `packages/clock/clock.py`'s `VirtualClock` has no `speed` parameter and no internal
 wall-clock read; `advance_ms(delta_ms)` and `set_ms(value_ms)` are the only ways its time
 moves, and both reject moving backwards.
+
+---
 
 ## Decision 21: Spool segment is never truncated or rotated on Day 1
 
@@ -859,6 +863,8 @@ isn't mistaken for an oversight.
 and stops at any line not yet terminated by `\n` (a torn write in progress), never
 advancing the offset past a partial line. `drain_from_start()` resets the offset to 0 and
 is called once at service startup, before the app accepts traffic.
+
+---
 
 ## Decision 22: The SSE acceptance test runs against a real subprocess, not the in-process TestClient
 
@@ -906,6 +912,8 @@ acceptance criterion (a scored event reaches the SSE stream) is unchanged.
 `tests/acceptance/test_durability.py`'s `_spawn`/`_wait_for_health`/`_seed_merchant` pattern
 instead of using the `client`/`scorer_state` fixtures from `tests/conftest.py`.
 
+---
+
 ## Decision 23: `on_event` replaced by `lifespan` in the FastAPI app factory
 
 ### Context
@@ -937,6 +945,8 @@ None.
 ### Implementation impact
 `services/scorer/app.py`: `create_app()`'s two `@app.on_event(...)` handlers were replaced
 by one `lifespan` async context manager.
+
+---
 
 ## Decision 24: Two test-fixture bugs found and fixed by actually running the suite
 
@@ -978,3 +988,613 @@ None — no rule definition changed; only the tests' request sequences did.
 `test_three_hard_rules_produce_meaningfully_non_allow_decision` both updated to use a
 constant `card_hash` (and `bin`, in the former) across their loop. Confirmed via the full
 suite: `55 passed` after the fix.
+
+---
+
+## Gate C: Day 2 — "A Launchable Attack" (24 August 2026)
+
+Decisions 25–38 were made during Day-2 planning and confirmed against the actual
+implementation (not just proposed) while writing `packages/simulator/*`,
+`services/scorer/{scoring,replay,routes_replay}.py`, `packages/detect/threat_state.py`, and
+the Day-2 dashboard. Four (25, 29, 33, 35) were resolved by the user before implementation
+began; the rest were proposed in the Day-2 plan and confirmed correct by the working code
+and its test suite (`tests/acceptance/test_simulator_*.py`, `test_attack_tiers.py`,
+`test_simulator_safety.py`, `test_fixture_integrity.py`, `test_replay_virtual_time.py`,
+`test_day2_e2e.py` — A1–A16, all green).
+
+## Decision 25: Replay executes in-process against the scoring core, driven by HTTP
+
+### Context
+Day 2 needs a demo-triggerable, virtual-time-driven replay of a synthetic attack through the
+real Day-1 scoring path. An external HTTP-based replay driver would score each event through
+`POST /v1/score`, which reads `state.clock` — always `SystemClock` on that path — reintroducing
+finding F6 (wall-clock coupling breaks the 60x compression claim).
+
+### Decision
+**Resolved by the user.** `services/scorer/replay.py::ReplayDriver` runs in-process inside the
+scorer, calling `services/scorer/scoring.py::score_attempt()` directly with its own
+`VirtualClock`, never going back out over HTTP per event. `POST /v1/replay/start|stop|reset`
+(TRD v2 §5, already listed "demo only") triggers it; `GET /v1/replay/status` and every SSE
+event's `replay` key expose its progress.
+
+### Alternatives considered
+An external harness that POSTs to `/v1/score` per event — rejected outright per Context above.
+A separate demo-only scorer process — rejected as unnecessary complexity; the real scorer
+process already has everything the driver needs (`ScorerState`, the window store, the event
+bus).
+
+### Reasoning
+In-process is the only way to inject a `VirtualClock` into the exact code path the storefront
+uses, which is what makes A13 (speed=0 vs speed=60 produce byte-identical decision sequences)
+and A14 (`ingest_time - epoch_ms == event.t_ms`) provable rather than approximately true.
+
+### Trade-off
+The replay driver and the storefront share one `ScorerState` (one `InMemoryWindowStore`, one
+event bus) — a running replay and live storefront traffic contend for the same rule windows.
+Acceptable for a single-merchant Day-2 demo; not a concern for Day 3+ multi-tenant work.
+
+### Specification impact
+None — TRD v2 §5 already named these endpoints as demo-only.
+
+### Implementation impact
+`services/scorer/replay.py` (`ReplayDriver`, `ReplayRequest`, `ReplayStatus`),
+`services/scorer/routes_replay.py` (the four endpoints), `services/scorer/deps.py`
+(`ScorerState.replay_driver`/`replay_task`, constructed in `build_default()`),
+`services/scorer/app.py` (router registration; the lifespan cancels any running replay task
+on shutdown).
+
+---
+
+## Decision 26: The scoring core is extracted into `services/scorer/scoring.py::score_attempt()`
+
+### Context
+Both `/v1/score` (SystemClock) and the replay driver (VirtualClock) need to run the identical
+sequence: mint `ingest_ms`/`attempt_uid`, evaluate rules, apply the auto-ceiling, build
+`AttemptRecord`/`ScoreRecord`, spool, and publish. Day 1 had this inlined in
+`routes_score.py`.
+
+### Decision
+`services/scorer/scoring.py::score_attempt(state, *, merchant_id, ip, body, clock=None,
+ulid=None, stopwatch=None, user_agent="")` is a pure extraction of Day-1 steps 5–11.
+`routes_score.py` now does auth + `resolve_client_ip` + `Stopwatch()` and delegates. `clock`
+and `ulid` both default to `state.clock`/`state.ulid`, so the storefront path is byte-for-byte
+Day 1's control flow.
+
+### Alternatives considered
+Duplicating the scoring logic in the replay driver — rejected; two copies of "mint id,
+evaluate rules, build records, spool, publish" would drift the moment either changed, and the
+55 Day-1 tests could not prove the replay path was equivalent to the storefront path.
+
+### Reasoning
+The 55 Day-1 tests, run unedited before and after the extraction, are the proof of zero
+behaviour change — this is what makes it a *refactor*, not a rewrite.
+
+### Trade-off
+`score_attempt` grew two parameters (`ulid`, `stopwatch`) beyond the plan's stated
+`clock`-only signature, so replay can also make `attempt_uid` minting deterministic (see
+Decision 27) and so `Stopwatch()` can still start at the true top of the HTTP handler (before
+auth), preserving Day-1's exact `latency_ms` semantics.
+
+### Specification impact
+None — the wire contract, DB schema, and SSE payload's Day-1 keys are all unchanged.
+
+### Implementation impact
+`services/scorer/scoring.py` (new), `services/scorer/routes_score.py` (auth + IP + delegate).
+Verified: `uv run pytest -q` → 55 Day-1 tests green with zero edits to any of them.
+
+---
+
+## Decision 27: Replay speed is a property of the replay driver, never of `VirtualClock`
+
+### Context
+TRD v2 §4.1 describes `VirtualClock(speed=60, epoch=t0)` returning `t0 + wall_elapsed × 60`.
+Decision 20 already shipped `VirtualClock` as a pure counter with no `speed` parameter and no
+wall-clock reads at all.
+
+### Decision
+Speed lives entirely in `services/scorer/replay.py::ReplayDriver.run()`: virtual time comes
+from the event stream's own `t_ms` (`vclock.set_ms(epoch_ms + ev.t_ms)`), and `speed` only
+scales the wall-clock `asyncio.sleep()` between sends. `speed=0` means no sleep at all.
+**Supersedes TRD v2 §4.1's `VirtualClock(speed=...)`; Decision 20 stands unmodified.**
+
+### Alternatives considered
+Adding `speed` back onto `VirtualClock` — rejected; it would let virtual time depend on wall
+time again, exactly the coupling Decision 20 eliminated, and would make A13 untestable in
+principle rather than merely something to verify.
+
+### Reasoning
+Because virtual time is read from `ev.t_ms` and speed only changes wall-clock sleeps, `speed=0`
+and `speed=60` are provably byte-identical in every value the scorer computes — this is
+metamorphic relation M6 by construction, not by hope. `tests/acceptance/
+test_replay_virtual_time.py::TestA13SpeedInvarianceOfDecisions` asserts the identical sequence
+(including `attempt_uid`, via Decision 30's deterministic replay ULID) and, separately, that
+`speed=1` takes measurably longer in wall time than `speed=0` — closing the "make both speeds
+sleep zero" gaming move named in the Day-2 plan's test-gaming review.
+
+### Trade-off
+None functionally; it does mean TRD v2 §4.1's code sketch is now wrong and needs the
+reconciliation noted below.
+
+### Specification impact
+**Requires a TRD v2 §4.1 update** (recorded in this same documentation pass): remove
+`speed=`/`epoch=` from the `VirtualClock` constructor sketch and describe pacing as a replay-
+driver parameter instead.
+
+### Implementation impact
+`services/scorer/replay.py::ReplayDriver.run()`'s loop.
+`tests/acceptance/test_replay_virtual_time.py` (A13, A14) and `tests/acceptance/
+test_day2_e2e.py` (A16) are the tests that would fail if this drifted.
+
+---
+
+## Decision 28: The simulator package is `packages/simulator/`; distillation lives in `scripts/`
+
+### Context
+The Day-2 brief's own documents disagreed: Impl Plan said `simulator/baseline.py`, the
+brief's own safety test said `packages/simulator`, Schema §9 said
+`python -m simulator.generate`, and `pyproject.toml` only installs `packages*`/`services*`/
+`scripts*` — so a bare top-level `simulator/` package would not even be importable as built.
+
+### Decision
+`packages/simulator/{__init__,rng,profile,identity,baseline,attack,stream,generate}.py`;
+entry point `python -m packages.simulator.generate`. The dev-only, pandas-dependent
+distillation step is `scripts/distill_baseline.py`, deliberately *outside* `packages/simulator`
+so `packages.simulator`'s transitive import closure — the thing A11's safety test statically
+walks — stays small and never has a reason to import pandas/openpyxl.
+
+### Alternatives considered
+A top-level `simulator/` package (matches the Impl Plan's literal text) — rejected; not
+installed by `pyproject.toml`'s package-discovery config, and would need either an unwanted
+`pyproject.toml` structural change or would simply fail to import under `pytest`/`uv run`.
+Putting distillation inside `packages/simulator/` — rejected per Context: it would put pandas
+on the safety-tested import closure for no runtime benefit.
+
+### Reasoning
+`packages/simulator/` matches the *only* one of the three conflicting documents that is also
+consistent with `pyproject.toml`'s actual `[tool.setuptools.packages.find]` config, so it is
+the only choice that does not additionally require an undiscussed build-config change.
+
+### Trade-off
+None — this made the Impl Plan and Backend Schema wrong in two places, reconciled in this same
+documentation pass.
+
+### Specification impact
+**Requires updates** to `07-IMPLEMENTATION-PLAN-v2.md` (deliverable paths) and
+`04-BACKEND-SCHEMA-v2.md` §9 (bootstrap step 4's command).
+
+### Implementation impact
+The whole `packages/simulator/` tree and `scripts/distill_baseline.py` as built; confirmed via
+`uv run pytest -q -m safety` (A11, 5/5 green) that the import-closure and text scans find
+nothing, including a runtime pass with `socket.socket` monkeypatched to raise.
+
+---
+
+## Decision 29: Baseline grounding is a committed derived artifact, not the raw dataset
+
+### Context
+Day 2 needs the baseline traffic model to be grounded in something real, not hand-authored
+numbers, while keeping the repository small and the simulator's runtime dependency-free.
+
+### Decision
+**Resolved by the user.** UCI Online Retail II (Chen, D., 2012; CC BY 4.0; verified this
+session: 1,067,371 line-item rows across two sheets, 43.5 MB xlsx,
+doi:10.24432/C5CG6D). The raw xlsx is downloaded once, gitignored
+(`data/baseline/*.xlsx`), and never committed. `scripts/distill_baseline.py` (pandas +
+openpyxl, dev-only) aggregates it into `data/baseline/online_retail_ii.profile.json` (~12 KB,
+integers and strings only: `source`, `rows_aggregated`, `orders`,
+`mean_order_value_gbp_minor`, 168 `hour_of_week_weights`, 1001-point
+`order_value_quantiles_minor_gbp`) plus its `.sha256`, both committed with attribution.
+
+### Alternatives considered
+Committing the raw xlsx — rejected: 43.5 MB in git for a demo dataset, and CC BY 4.0 does not
+require redistributing the raw file, only attributing derived use. A fully synthetic
+(log-normal/Poisson) baseline with no real grounding — rejected by the user; the generative
+fallback is kept behind the same interface but is not the default (Impl Plan's 20:00 cut
+trigger stays executable if ever needed).
+
+### Reasoning
+CC BY 4.0 permits redistributing a derived, aggregated artifact with attribution; the derived
+profile is small, integer-only (Decision 30), and is the exact determinism boundary the
+simulator's runtime never crosses back over into pandas territory.
+
+### Trade-off
+The profile is generated once and hand-verified rather than continuously re-derived — an
+edited profile without a regenerated `.sha256` is caught by `packages/simulator/profile.py`'s
+load-time SHA check, which raises rather than silently loading stale data.
+
+### Specification impact
+**Requires updates** to `05-EVAL-PROTOCOL-v2.md` §4/V1 (dataset, licence, distillation method,
+rescale formula), `02-PRD-v2.md` §6/§9 (attribution), `00-CHANGELOG-v1-to-v2.md` (judgement
+call #2 marked resolved), and a new `README.md` (previously 0 bytes) with the CC BY 4.0
+attribution the licence requires.
+
+### Implementation impact
+`scripts/distill_baseline.py`, `data/baseline/online_retail_ii.profile.json` + `.sha256` +
+`README.md`, `packages/simulator/profile.py::load_baseline_profile()`. `pyproject.toml` gained
+a `data` optional-dependency group (`pandas`, `openpyxl`); `.gitignore` gained
+`data/baseline/*.xlsx`.
+
+---
+
+## Decision 30: Determinism via getrandbits-only sampling; canonical JSON serialization
+
+### Context
+The Day-2 gates require byte-identical output across two fresh subprocesses (A1), across
+CPython 3.12 and 3.13 (A3), and across `speed=0`/`speed=60` replay runs (A13) — none of which
+hold if any float repr, `dict` iteration order, or unseeded RNG call leaks in anywhere.
+
+### Decision
+`packages/simulator/rng.py::SubStream` wraps one `random.Random(derived_seed)` per
+`(seed, label)` pair and exposes only `getrandbits()`-derived operations (`below()` via
+rejection sampling, `pick_index()` via integer inverse-CDF over prefix sums) — no
+`random.random()`, `choice()`, `shuffle()`, `sample()`, no numpy, anywhere in
+`packages/simulator`. Every JSONL line is
+`json.dumps(obj, sort_keys=True, separators=(",",":"), ensure_ascii=True) + "\n"`, files
+opened `newline="\n"`.
+
+### Alternatives considered
+`numpy.random.Generator` — rejected; adds a runtime dependency to `packages/simulator`
+(violating Decision 28's "stdlib + pyyaml only") purely for sampling stdlib's `random` already
+does deterministically. Floating-point amount rescaling — rejected; `packages/simulator/
+profile.py::rescale_to_store_aov()` uses integer round-half-up (`(num + den//2) // den`)
+specifically so no platform's float rounding can disagree.
+
+### Reasoning
+`random.Random`'s seeding and `getrandbits()` output are part of CPython's documented,
+version-stable behaviour for `int`/`str` seeds — this is *why* A3 (cross-interpreter SHA
+match) is provable rather than merely likely. Verified this session:
+`test_simulator_determinism.py::TestA3` passes comparing a real CPython 3.12.6 subprocess
+against a real 3.13.3 subprocess (`uv python list` confirmed both installed), run under
+`uv run --isolated` so the nested interpreter selection cannot corrupt the outer project
+environment.
+
+### Trade-off
+None inherent; one real operational hazard was found and fixed during implementation (see the
+environment-stability note in this session's work): running `uv run --python <other>` from
+*inside* an already-running `uv run pytest` process, without `--isolated`, causes `uv` to
+rebuild the shared project `.venv` in place, racing and corrupting the outer process. Fixed by
+adding `--isolated` to A3's nested interpreter calls.
+
+### Specification impact
+None new beyond what Decision 30 was already going to require; TRD v2 §7's "stdlib-only at
+runtime" constraint is confirmed, not changed.
+
+### Implementation impact
+`packages/simulator/rng.py`, `packages/simulator/stream.py::canonical_line()`,
+`packages/simulator/profile.py::rescale_to_store_aov()`. Verified via
+`test_simulator_determinism.py` (A1–A4, all green) including the cross-interpreter check.
+
+---
+
+## Decision 31: Baseline and attack draw from disjoint, independently seeded RNG sub-streams
+
+### Context
+Eval Protocol v2 §4 requires "the attack half stays authored" — changing an attack parameter
+(or even which tier is generated) must not perturb the baseline traffic's content or timing.
+
+### Decision
+Every `SubStream` is labelled by a fixed string never parameterized by tier for the baseline
+side (`"baseline:arrivals"`, `"baseline:amount"`, `"baseline:customer"`, `"baseline:ip"`,
+`"baseline:decline"`, `"baseline:session"`, `"baseline:guarantee"`) and by
+`f"attack:{tier}:*"` for the attack side. Because each label hashes to an independent
+`random.Random` seed (Decision 30), the two halves cannot influence each other's draws.
+
+### Alternatives considered
+One shared `random.Random` instance for the whole run — rejected outright; it is exactly the
+coupling this decision exists to prevent, and would make A4 fail by construction.
+
+### Reasoning
+A4 (`tests/acceptance/test_simulator_determinism.py::TestA4BaselineIndependentOfTier`)
+generates `tier=easy` and `tier=hard` at the same seed and asserts the baseline events' content
+(minus `event_id`/`seq`, which encode merged-stream position and legitimately differ — see
+Decision 32) is byte-identical between the two runs. This originally failed: the "guaranteed
+baseline coverage inside the episode window" mechanism (added for A7) used the tier's actual
+episode end time as its sampling bound, so the two tiers' differing episode durations (300s vs
+900s) desynchronized the shared `"baseline:guarantee"` sub-stream's RNG consumption. Fixed by
+anchoring that guarantee window to a fixed 60s span from `episode_start_ms` — tier-independent,
+and still a subset of both tiers' actual episode window, so A7 keeps holding too.
+
+### Trade-off
+None — this is a correctness fix, not a compromise.
+
+### Specification impact
+None.
+
+### Implementation impact
+`packages/simulator/generate.py::GUARANTEE_WINDOW_MS` (60,000, fixed) replaces what would have
+been the tier's own `ended_at_ms` in the call to `generate_baseline_events(...,
+episode_windows=...)`. Verified: A4 and A7 both green simultaneously.
+
+---
+
+## Decision 32: Episode truth ships as filesystem artifacts on Day 2, not SQLite rows
+
+### Context
+`attempt_label.attempt_uid` foreign-keys `auth_attempt`, which only the async `Drainer`
+populates — writing labels synchronously during replay would race the drainer and could
+violate the FK constraint before the corresponding row exists.
+
+### Decision
+`packages/simulator/generate.py::build_stream()` returns `SimulatorOutput(events, labels,
+episodes)` as in-memory dataclasses; the CLI writes them to `events.jsonl`/`labels.jsonl`/
+`episodes.jsonl`. Loading into `episode_truth`/`attempt_label` remains Day 4's eval-loading
+concern, not Day 2's.
+
+### Alternatives considered
+Writing labels to SQLite synchronously inside the replay loop — rejected per Context: would
+require either blocking on the drainer's async insert or accepting real FK-violation risk.
+
+### Reasoning
+`event_id`/`seq` are assigned strictly sequentially across the *merged* stream, never from a
+per-source counter, so no identifier's numeric range alone reveals whether it came from the
+baseline or attack model (Day-2 Plan §F anti-leakage checklist) — this is also why A4's
+baseline-content comparison must exclude `event_id`/`seq` and compare the remaining fields in
+merged order instead.
+
+### Trade-off
+None for Day 2; Day 4 must still write a loader from these JSONL files into the DB tables.
+
+### Specification impact
+**Requires a Backend Schema v2 §9 update**: the JSONL record shapes for
+`events`/`labels`/`episodes` were unspecified anywhere before this session; now specified.
+
+### Implementation impact
+`packages/simulator/stream.py` (`Event`, `Label`, `Episode`, `RawItem`, `merge_and_number()`).
+Verified via A5 (episode counts match an independent recount from labels), A6 (events↔labels
+bijection on `event_id`), A7 (baseline traffic inside every episode window).
+
+---
+
+## Decision 33: The threat band is server-computed and carried on the SSE event
+
+### Context
+The Day-2 dashboard needs a threat-state indicator that is honest — driven by what the rules
+actually observed, not invented client-side — while Day 6's real incident detector does not
+exist yet.
+
+### Decision
+**Resolved by the user.** `packages/detect/threat_state.py::ThreatRollup` is a stateful,
+event-time-windowed rollup on `ScorerState.threat`: any R1 fire (or `throttle`) →
+`elevated`; any R2/R3 fire (or `challenge`/`step_up`/`block`) → `under_attack`; no fire in a
+rolling 5-minute (event-time) window → decays through `resolved` (30s event-time
+auto-dismiss, per UIUX v2 §2.1) back to `calm`. `services/scorer/scoring.py` calls
+`state.threat.observe(...)` and publishes the result as `threat_state` on every SSE event;
+`services/dashboard/src/App.jsx` renders it verbatim, never deriving it locally.
+
+### Alternatives considered
+Deriving the band in the dashboard from raw `rules_fired`/`decision` fields — rejected by the
+user and by the Day-2 plan's own test-gaming review: a frontend-derived band cannot be proven
+honest by a server-side test, and `test_day2_e2e.py`'s threat-state assertions would be
+meaningless.
+
+### Reasoning
+Rolling on `ingest_ms` (event time) exclusively — never wall time — is what keeps this
+testable under A13: `tests/acceptance/test_clock_discipline.py`'s existing repo-wide AST scan
+already covers `packages/detect/threat_state.py` with no changes to that Day-1 test, since it
+recursively scans all of `packages/services/scripts`.
+
+### Trade-off
+This is explicitly a Day-2 stand-in, not real incident detection — no CUSUM, no drift
+statistics, no entity resolution. Day 6 replaces it; the interface (`observe()` returning a
+`threat_state` string) is designed to be swappable.
+
+### Specification impact
+None new; already anticipated as a Day-6 replacement point.
+
+### Implementation impact
+`packages/detect/threat_state.py` (new), `services/scorer/deps.py`
+(`ScorerState.threat: Optional[ThreatRollup]`), `services/scorer/scoring.py` (calls
+`observe()`, publishes `threat_state`), `services/scorer/replay.py::ReplayDriver.reset()`
+(also clears the rollup). Verified via `test_day2_e2e.py`: a real easy-tier replay observed on
+screen and via the API transitions `calm -> under_attack`, confirmed both automatically (A16)
+and manually in a live browser session against the running dashboard.
+
+---
+
+## Decision 34: The SSE event gains `rules_fired`, `feature_snapshot`, `threat_state`, `replay`; `card_hash` never appears
+
+### Context
+The D1 dashboard needs enough per-event detail to render a live ticker with rule names and a
+"cards per IP" tile, but `/v1/stream` remains unauthenticated (Day 1, unchanged on Day 2).
+
+### Decision
+`services/scorer/scoring.py`'s published event grew from Day 1's five keys
+(`attempt_uid`, `decision`, `ip`, `bin`, `ingest_time`) to also carry `rules_fired`
+(`evaluation.fired_names`), `feature_snapshot` (`evaluation.feature_snapshot`),
+`threat_state` (Decision 33), `regime` (`"in_control"`, constant), and `replay` (a mirror of
+`ReplayStatus.to_dict()`, or an idle placeholder when no `ReplayDriver` is attached).
+`card_hash` is never added.
+
+### Alternatives considered
+Also publishing `card_hash` (would simplify a hypothetical future "cards per IP, actual list"
+tile) — rejected; PRD v2 §9 treats disclosing threshold-proximity/identity detail on an
+unauthenticated stream as evasion-assisting, and nothing on Day 2 needs it.
+
+### Reasoning
+Publishing `feature_snapshot` (raw rule counts) on an unauthenticated stream does disclose how
+close an entity is to a threshold — a real, if Day-2-accepted, information leak. Mitigation
+today is topological (the demo binds loopback only); stream auth is explicitly Day 7 hardening,
+not addressed here.
+
+### Trade-off
+Accepted disclosure risk on the unauthenticated stream, scoped to loopback-only demo binding.
+
+### Specification impact
+**Requires a Threat Model v2 addendum** (this documentation pass): the SSE stream now carries
+`rules_fired`/`feature_snapshot` while unauthenticated; disclosure accepted for the Day-2 demo,
+stream auth deferred to Day 7. Also records that `TRUSTED_EDGE_HOSTS`' `X-Forwarded-For`
+handling (Day 1, `services/scorer/net.py`) is now load-bearing for the replay-driven demo's
+IP-per-event realism.
+
+### Implementation impact
+`services/scorer/scoring.py`'s `event` dict construction. Verified via `test_day2_e2e.py`: the
+SSE payload's `rules_fired` is asserted non-empty and intersects {R1, R2, R3} names during a
+real easy-tier replay; `threat_state` is asserted to transition `calm -> under_attack`.
+
+---
+
+## Decision 35: The four D1 tiles render in their specified shape with honest empty states
+
+### Context
+UIUX v2 specifies four D1 tiles, but two of their real data sources (`/v1/outcome` for decline
+rate, the Day-6 blast-radius cap for enforcement) do not exist on Day 2.
+
+### Decision
+**Resolved by the user.** `ATTEMPTS · 5 MIN` is live (counted client-side from buffered SSE
+events within 5 minutes of the latest event's own `ingest_time` — event time, not wall time,
+so it reads correctly under 60x replay). `CARDS PER IP · TOP` is a live raw count
+(`max(feature_snapshot.distinct_cards_per_ip_5m)` over the buffered window), captioned
+"store-relative quantile · Day 5" since the quantile treatment isn't built yet.
+`DECLINE RATE` and `ENFORCEMENT` render `—` and `— / 10` respectively, with their real captions
+naming the day they light up. No tile ever renders a bare `0` for a metric with no data source.
+
+### Alternatives considered
+Inventing placeholder numbers for decline rate/enforcement — rejected by the user and by the
+Day-2 plan's own failure-mode list ("rendering `0` in a tile that has no data source" is named
+explicitly as a thing not to do).
+
+### Reasoning
+`ATTEMPTS · 5 MIN`'s window uses the *event-time* axis specifically because a wall-clock 5-
+minute window would show almost nothing during a 60x-compressed replay (300 real seconds of
+observation covering 5 virtual hours) — confirmed visually in a live browser session: the tile
+climbed from 0 to 100 (its 100-event client buffer cap) within seconds of Launch at `speed=60`.
+
+### Trade-off
+None.
+
+### Specification impact
+**Requires a UIUX v2 §6.2 update**: the Day-2 empty-state rule for tiles without a data source.
+
+### Implementation impact
+`services/dashboard/src/App.jsx`'s `Tile` component and the `attemptsIn5Min`/`cardsPerIpTop`
+derivations. Verified in a live browser session (this documentation pass): initial state shows
+`CALM`, `0`, `—`, `—`, `— / 10` exactly as specified; after Launch, the live tiles climbed and
+the fixed tiles stayed at their honest placeholders throughout.
+
+---
+
+## Decision 36: Day-2 DC strip is a documented subset; Reset is required, not convenient
+
+### Context
+UIUX v2's full DC strip includes controls (negative-control selector, flood toggle,
+kill-scorer toggle) that presuppose Day 4/Day 7 features. Separately, `VirtualClock` cannot
+move backwards (Decision 20) and `InMemoryWindowStore`/`ThreatRollup` both accumulate state
+across a run.
+
+### Decision
+The Day-2 DC strip is exactly: tier selector (`easy`/`hard` enabled; `medium`/`evasive` shown
+disabled with a "Day 4"/"Day 7" label, not hidden), Launch, Stop, Reset, a speed selector
+(`0`/`1`/`60`), and the permanent chip. Negative-control selector and flood/kill-scorer
+toggles are *omitted*, not stubbed. **Reset clears both `InMemoryWindowStore` and
+`ThreatRollup`** (`ReplayDriver.reset()`) — without it, a second `Launch` in the same process
+would inherit stale window/threat state and could not reproduce the same on-screen sequence.
+
+### Alternatives considered
+Stubbing the omitted controls as visibly-disabled buttons anyway — rejected; the Day-2 plan
+explicitly distinguishes "omitted" from "stubbed," and there is no Day-2 behaviour for a
+stubbed flood/kill-scorer button to even gesture at.
+
+### Reasoning
+Verified in the live browser session: a full `speed=0` replay ran to completion
+(821/821 events); a subsequent `Reset` + `Launch` (`speed=60`) cycle correctly restarted from
+`CALM` with an empty window store and produced the same `calm -> under_attack` progression —
+confirming Reset is load-bearing, not cosmetic.
+
+### Trade-off
+None.
+
+### Specification impact
+**Requires a UIUX v2 §6.12 update**: the Day-2 DC subset, documented explicitly.
+
+### Implementation impact
+`services/dashboard/src/App.jsx` (tier/speed selectors, Launch/Stop/Reset buttons, the
+permanent chip). `packages/features/memory_store.py::InMemoryWindowStore.clear()` (new,
+additive, not exercised by any Day-1 code path). `services/scorer/replay.py::
+ReplayDriver.reset()`.
+
+---
+
+## Decision 37: `golden.jsonl` is generated by an explicit command and is characterization-only for content
+
+### Context
+A fixture-reproduction test that regenerates its own expected answer and then asserts against
+it proves nothing — the Day-2 plan's own test-gaming review names this exact move.
+
+### Decision
+`tests/fixtures/golden.{jsonl,labels.jsonl,episodes.jsonl}` are generated once by an explicit,
+separate command (`python -m packages.simulator.generate --seed 42 --tier easy --hours 3
+--epoch-ms 0 --out ... --labels ... --episodes ...`; the easy tier's `episode_duration_s` was
+tuned from 300s to 600s specifically to land the fixture at 821 events, inside the committed
+600–1200 target) and committed alongside a `sha256sum`-format `golden.sha256`. Regeneration-
+reproduces-itself is `tests/characterization/test_golden_reproduction.py`, marked
+`characterization` — informational, never a gate. The only *gating* fixture test
+(`test_fixture_integrity.py`, A12) recomputes each file's SHA-256 from its committed bytes and
+compares to `golden.sha256` — never to a literal hash in the test source, and never
+regenerating the fixture itself.
+
+### Alternatives considered
+Making the reproduction test a gate — rejected per Context.
+
+### Reasoning
+The determinism gates that *are* gates (A1–A4) compare two fresh runs to each other, never to
+a committed answer — this is what stops "generate golden.jsonl from the implementation, then
+test that the implementation reproduces it," a structurally circular test.
+
+### Trade-off
+A silent, un-regenerated drift between the fixture and the current generator is possible in
+principle (caught only by the advisory characterization test, not a gate) — accepted, per
+Impl Plan v2.1 §1.2's characterization-test philosophy.
+
+### Specification impact
+None new — this is Decision 37/Changelog T4 as already named in the Day-2 plan, now
+implemented.
+
+### Implementation impact
+`tests/fixtures/golden.jsonl` (821 events, 171,577 bytes), `.labels.jsonl`, `.episodes.jsonl`,
+`.sha256` (generated with `sha256sum --text` for the two-space text-mode separator, not the
+`*`-prefixed binary-mode default some `sha256sum` builds use). `tests/characterization/
+test_golden_reproduction.py` (new). `config/attack_tiers.yaml`'s `easy.episode_duration_s`
+(300 → 600).
+
+---
+
+## Decision 38: Every `attack_tiers.yaml` parameter is `{value, unit, source}`, checked structurally
+
+### Context
+A gameable anti-circularity test ("cite a real-looking source for one parameter, copy it
+everywhere") would defeat the purpose of requiring citations at all.
+
+### Decision
+`config/attack_tiers.yaml`: every populated leaf (any dict containing a `value` key, skipping
+leaves marked `pending`) has `value`, `unit`, `source`. `tests/acceptance/
+test_attack_tiers.py::TestA10` checks each `source`: ≥12 characters, not matching a banned-
+vocabulary regex (`synthetic|made-up|arbitrary|placeholder|guess(ed)?|n/a|unknown|tbd|todo`),
+matching a citation-shape regex (a `§`+digit, a `Decision N`, a `doi:10.`, or a versioned
+document name followed later by `§`), and requires ≥4 *distinct* source strings across the
+whole file (11 achieved: Threat Model v2 §6/§7b, Eval Protocol v2 §4/V2/§5, PRD v2 §2, Impl
+Plan v2.1 §Day 2). `medium`/`evasive` carry a `pending: "Day 4"`/`"Day 7"` marker and are
+exempt.
+
+### Alternatives considered
+A single blanket citation for the whole file — rejected structurally by the distinct-source-
+count check. Trusting human review alone — rejected as insufficient per the Day-2 plan's own
+test-gaming review, though review remains the backstop for citation *authenticity* (the
+mechanism cannot verify a citation is true, only that it is shaped like one and not obviously
+fabricated).
+
+### Reasoning
+Every `source` string in the committed file is a real citation to a document already in this
+repository (Threat Model v2, Eval Protocol v2, PRD v2, Impl Plan v2.1), verified by reading
+those sections directly while authoring the values, not invented alongside them.
+
+### Trade-off
+Explicitly, per the Day-2 plan's test-gaming review: "a determined faker can write a
+plausible-looking citation" — this mechanism is structural, not a proof of intent, and is
+backstopped by human review, not a replacement for it.
+
+### Specification impact
+None new — Decision 38 as already named in the Day-2 plan, now implemented.
+
+### Implementation impact
+`config/attack_tiers.yaml` (11 real, distinct citations across `easy`/`hard`'s 9 populated
+parameters each). `tests/acceptance/test_attack_tiers.py::TestA10AttackTiersAntiCircularity`.

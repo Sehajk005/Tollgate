@@ -124,7 +124,7 @@ Left nav (three items now: Live, Incidents, Metrics), global threat indicator, a
 **Answers in three seconds: is anything wrong right now?**
 
 - **Threat band** — Calm / Elevated / Under Attack. Colour *plus* text label, never colour alone.
-- **Four counters** — attempts (5 m), decline rate vs. baseline in sigmas, distinct cards per top entity as a **store-relative quantile** (not a raw count — see TRD §6.2), active enforcement count against `K_max`.
+- **Four counters** — attempts (5 m), decline rate vs. baseline in sigmas, distinct cards per top entity as a **store-relative quantile** (not a raw count — see TRD §6.2), active enforcement count against `K_max`. **Day-2 states (Decisions.md decision 35):** attempts (5 m) is live, counted in event time so it reads correctly under 60× replay; decline rate and enforcement render `—` with a caption naming the day they light up (Day 7, Day 6); cards-per-top-entity renders as a raw count (not yet the quantile) captioned "store-relative quantile · Day 5".
 - **One sparkline** — attempt volume over 60 virtual minutes with the learned baseline band drawn behind it. *The deviation is the story, not the absolute number.* (v1 had twin sparklines; one is enough and the second cost an hour.)
 - **Live event ticker** — scored attempts, colour-coded by tier, pseudonymised identifiers only.
 - **Incident banner** — the primary route into D3.
@@ -166,9 +166,11 @@ Standard card form. Two demo-only additions behind `?demo=1`: a live latency rea
 
 Persistent overlay. Attack tier selector (easy / medium / hard / **evasive**) with launch. Negative-control selector with launch. Replay speed selector. **Kill-scorer toggle** *and* **flood toggle** — two separate buttons for two separate rungs. Reset.
 
-The compression factor is permanently on screen, and in v2 it says something stronger:
+**Day-2 subset (Decisions.md decision 36):** only the tier selector (all four shown, `medium`/`evasive` disabled with a "Day 4"/"Day 7" label), Launch, Stop, Reset, and a speed selector (`0`/`1`/`60`) are built. The negative-control selector and both degradation toggles are *omitted*, not stubbed, until Day 4/Day 7.
 
-> **60× — virtual clock. Window semantics preserved. Latency reported in event time.**
+The compression factor is permanently on screen, and in v2 it says something stronger. **Canonical component copy (C6, resolved): UIUX v2 §6.12's exact string —**
+
+> **×60 VIRTUAL CLOCK · WINDOWS PRESERVED · TTD IN EVENT TIME**
 
 v1's banner drew attention to a real problem (60× replay compressed five minutes of window into five seconds, so demo detection wasn't production detection). v2's banner draws attention to the fix.
 
@@ -211,7 +213,7 @@ Split screen: storefront left, dashboard right
 
 1. Normal traffic. D1 Calm. A real checkout completes, latency badge visible.
 2. DC: launch HARD tier at 60× (virtual-clock banner on screen).
-3. D1 counters move; decline rate departs the baseline band; threat band → Elevated.
+3. D1 counters move; decline rate departs the baseline band; threat band → Elevated. **Annotated (Decisions.md decision 34, C8):** Day 2's Act One cannot show the decline-rate beat — it needs `/v1/outcome` (Day 7). Day 2's exit demo instead shows attempts (5 m) climbing and the threat band moving `Calm → Elevated → Under Attack`, driven by `threat_state` on the SSE event; it runs the **easy** tier (hard-tier detectability is measured, not required, on Day 2 — Day-2 Plan §C).
 4. Incident fires. Banner → D3. Read the narrative aloud.
 5. Confirm the recommended tier. Attack traffic starts hitting S3.
 6. ★ A legitimate customer completes checkout FROM THE SAME CGNAT IP

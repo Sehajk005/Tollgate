@@ -229,24 +229,27 @@ true by 20:00, it takes Day 2's morning and Day 2's UI polish is cut.**
 
 **Goal.** Press a button, watch the dashboard change. Act One exists, ugly.
 
-**Deliverables**
-- `simulator/baseline.py` — arrivals and amounts **resampled from a public real-world order log**, rescaled to `store_profile.yaml`; fictional long-tailed BIN sampling; organic declines; foreign-issued share
-- `simulator/attack.py` — easy and hard tiers, every parameter carrying `source:`
-- `scripts/replay.py` on `VirtualClock`
+**Deliverables** *(paths corrected to `packages/simulator/` — Decisions.md decision 28; the bare `simulator/` package below is not installed by `pyproject.toml`)*
+- `packages/simulator/baseline.py` — arrivals and amounts **resampled from a public real-world order log**, rescaled to `store_profile.yaml`; fictional long-tailed BIN sampling; organic declines; foreign-issued share
+- `packages/simulator/attack.py` — easy and hard tiers, every parameter carrying `source:`
+- `scripts/replay.py` on `VirtualClock`, plus `services/scorer/replay.py::ReplayDriver` (the in-process HTTP-triggered path — Decisions.md decision 25) and `services/scorer/routes_replay.py`
 - `D1` threat band + four counters; `DC` control strip
 - `tests/fixtures/golden.jsonl` **+ `golden.sha256`**
 
 **Acceptance tests**
-- Determinism: same seed → byte-identical file. Different seed → different file (catches a hardcoded stream)
-- **Cross-environment determinism:** same seed under a different Python minor version and platform → identical hash, or an explicit documented tolerance *(new — float repr and dict ordering bite here)*
+- Determinism: same seed → byte-identical file. Different seed → different file (catches a hardcoded stream) — **A1, A2**
+- **Cross-environment determinism:** same seed under a different Python minor version and platform → identical hash, or an explicit documented tolerance *(new — float repr and dict ordering bite here)* — **A3**
+- **Baseline content is independent of which attack tier is generated alongside it** — **A4** (Decisions.md decision 31)
 - Every event with `is_attack=true` has an `episode_id` present in `episode_truth`
 - Hard-tier attempt rate falls inside its configured band (guards against generating an easy attack and calling it hard)
 - Hard-tier amounts are distributionally similar to baseline, not a fixed floor
 - **Every parameter in `attack_tiers.yaml` has a non-empty `source`** ← the anti-circularity test
 - `-m safety`: no Luhn logic, no digit-sequence construction, no `card_number`; no `requests`/`httpx`/`socket` importable from `packages/simulator`
 - Fixture hash matches `golden.sha256`
+- **Replay at `speed=0` and `speed=60` produce identical decision sequences — A13**; **`ingest_time - epoch_ms == event.t_ms` — A14** (Decisions.md decision 27)
+- **End-to-end: a real Launch drives rules, decisions, spool→SQLite, and the threat band — A16**
 
-**Exit.** Launch button → rules fire → threat band moves on screen. **Trigger: if not true by 20:00, cut the external baseline dataset and use the generative baseline, stating it in the report.**
+**Exit.** Launch button → rules fire → threat band moves on screen. **Resolved (Decisions.md decision 29): the external baseline dataset (UCI Online Retail II, CC BY 4.0) was integrated and verified on Day 2 itself, well ahead of this trigger** — the generative-baseline fallback stays implemented but was not needed. The exit demo runs the **easy** tier; hard-tier detectability is measured, not required (Threat Model §6's Tier E paces just under the rules' thresholds by design).
 
 ---
 
@@ -426,7 +429,7 @@ Pitch deck. Final rehearsal. Fresh-clone reproduction test — clone to an empty
 | When | Condition to hold | If not met, cut *this* |
 |---|---|---|
 | Day 1, 20:00 | Skeleton end-to-end | Nothing — take Day 2's morning; cut Day 2's UI polish instead |
-| Day 2, 20:00 | Attack launch visibly moves the dashboard | External baseline dataset → generative baseline, **stated in the report** |
+| Day 2, 20:00 | Attack launch visibly moves the dashboard | **Resolved:** dataset integrated same-day (Decisions.md decision 29); this 20:00 line is now a schedule guard only, not an eval-validity deadline — Eval Protocol §4/V1's own end-of-Day-4 line governs eval validity (C2, reconciled) |
 | Day 3, 20:00 | Differential test green | **Redis** → `InMemoryWindowStore`, limitation in README |
 | Day 4, 20:00 | Harness sanity scorers green | Tier E **and** the discriminability audit |
 | Day 5, 20:00 | First per-tier `eval_run` exists | The LightGBM model → rules-only with a calibrated rule score |

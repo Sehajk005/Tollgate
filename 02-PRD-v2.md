@@ -150,6 +150,8 @@ and R3, are not yet specified anywhere and are recorded as future work rather th
 
 No public dataset of merchant checkout authorization attempts with card-testing labels exists. Simulation is mandatory. v1's countermeasures all operated on the attack half, which is why they didn't close the loop.
 
+**Baseline attribution (Decisions.md decision 29, resolved Day 2).** The legitimate half is grounded in UCI *Online Retail II* (Chen, D., 2012; [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); doi:10.24432/C5CG6D) — a real transaction log, not a generative model. Only a derived, integer-only profile is committed; the raw dataset is gitignored and never redistributed. See `README.md` and `data/baseline/README.md` for the full attribution and regeneration instructions.
+
 **v2's controls** (full detail in Eval Protocol §4):
 
 1. **The legitimate half comes from a source that isn't me** — baseline arrivals and amounts resampled from a public real-world e-commerce order log. This is the only control that structurally breaks the symmetry.
