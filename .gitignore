@@ -30,3 +30,6 @@ dist/
 Thumbs.db
 .vscode/
 .idea/
+
+# Worktrees (agent-managed isolated workspaces)
+.worktrees/
