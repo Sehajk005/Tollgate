@@ -19,6 +19,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from services.scorer.deps import ScorerState
+from services.scorer.routes_replay import router as replay_router
 from services.scorer.routes_score import router as score_router
 from services.scorer.routes_stream import router as stream_router
 
@@ -35,6 +36,8 @@ def create_app(state: Optional[ScorerState] = None) -> FastAPI:
         try:
             yield
         finally:
+            if active_state.replay_task is not None and not active_state.replay_task.done():
+                active_state.replay_task.cancel()
             active_state.drainer.stop()
             active_state.spool.close()
 
@@ -49,6 +52,7 @@ def create_app(state: Optional[ScorerState] = None) -> FastAPI:
 
     app.include_router(score_router)
     app.include_router(stream_router)
+    app.include_router(replay_router)
 
     @app.get("/healthz")
     async def healthz() -> dict:

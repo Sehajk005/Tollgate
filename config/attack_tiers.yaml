@@ -1,0 +1,134 @@
+# Source: Day-2 Plan §F "Attack model" -- parameter set drawn verbatim from
+# Eval Protocol v2 §5's declared search space (pacing, IP pool size, BIN
+# spread, amount sampler, session reuse, hour-of-day placement), not
+# invented. Every populated leaf is {value, unit, source}; `source` is
+# checked by tests/acceptance/test_attack_tiers.py::TestA10 for length,
+# banned vocabulary, and citation shape (Decision 38).
+#
+# Day 2 ships easy + hard (Day-2 Plan §C, C3). medium/evasive exist as
+# declared placeholders -- `pending` leaves are exempt from A10's source
+# check (Step 2 failure-mode note) but must be present so the tier selector
+# has all four keys to show, two enabled (Decision 36).
+
+easy:
+  attempts_per_hour:
+    value: 3600
+    unit: attempts_per_hour
+    source: "Threat Model v2 §6 -- Tier E pacing model; easy sits far above every per-window threshold on purpose"
+  attempts_per_hour_band:
+    min: 500
+    max: 100000
+    source: "Impl Plan v2.1 §Day 2 -- easy has no configured-band gate (A8 checks hard only); wide/advisory"
+  ip_pool_size:
+    value: 2
+    unit: count
+    source: "Eval Protocol v2 §5 -- declared search space includes IP pool size"
+  distinct_cards:
+    value: 400
+    unit: count
+    source: "PRD v2 §2 -- card testing is validating a stolen card list against a merchant"
+  bin_pool_size:
+    value: 1
+    unit: count
+    source: "Threat Model v2 §7b -- BIN concentration is a card-testing signal"
+  foreign_bin_share:
+    value: 900
+    unit: ppm
+    source: "Threat Model v2 §7b -- foreign-issued BIN share is a feature family (Day 3+)"
+  amount_sampler:
+    value: baseline_low_tail
+    unit: mode
+    source: "Eval Protocol v2 §4/V2 -- attacker amounts drawn from the store's own empirical low tail"
+  amount_quantile_band:
+    min: 0
+    max: 300
+    unit: permille_of_quantile_table
+    source: "Eval Protocol v2 §4/V2 -- low-tail quantile band, shared table with the baseline"
+  session_reuse:
+    value: 0
+    unit: ppm
+    source: "Eval Protocol v2 §5 -- declared search space includes session reuse"
+  hour_of_day_placement:
+    value: 0
+    unit: hour_of_day
+    source: "Eval Protocol v2 §5 -- declared search space includes hour-of-day placement"
+  episode_duration_s:
+    value: 600
+    unit: seconds
+    source: "Impl Plan v2.1 §Day 2 -- episode duration is a Day-2 authored parameter, tuned so the
+      golden fixture (Step 5) lands within its committed 600-1200 event target"
+
+hard:
+  attempts_per_hour:
+    value: 1150
+    unit: attempts_per_hour
+    source: "Threat Model v2 §6 -- Tier E paces just under R1's 20 attempts/IP/60s threshold"
+  attempts_per_hour_band:
+    min: 900
+    max: 1199
+    source: "Impl Plan v2.1 §Day 2 -- the configured band A8 recomputes attempts/hour against"
+  ip_pool_size:
+    value: 40
+    unit: count
+    source: "Eval Protocol v2 §5 -- declared search space includes IP pool size"
+  distinct_cards:
+    value: 400
+    unit: count
+    source: "PRD v2 §2 -- card testing is validating a stolen card list against a merchant"
+  bin_pool_size:
+    value: 12
+    unit: count
+    source: "Threat Model v2 §7b -- BIN spread keeps distinct_cards_per_bin_5m under R3's threshold"
+  foreign_bin_share:
+    value: 900
+    unit: ppm
+    source: "Threat Model v2 §7b -- foreign-issued BIN share is a feature family (Day 3+)"
+  amount_sampler:
+    value: baseline_low_tail
+    unit: mode
+    source: "Eval Protocol v2 §4/V2 -- attacker amounts drawn from the store's own empirical low tail"
+  amount_quantile_band:
+    min: 0
+    max: 300
+    unit: permille_of_quantile_table
+    source: "Eval Protocol v2 §4/V2 -- low-tail quantile band, shared table with the baseline"
+  session_reuse:
+    value: 0
+    unit: ppm
+    source: "Eval Protocol v2 §5 -- declared search space includes session reuse"
+  hour_of_day_placement:
+    value: 0
+    unit: hour_of_day
+    source: "Eval Protocol v2 §5 -- declared search space includes hour-of-day placement"
+  episode_duration_s:
+    value: 900
+    unit: seconds
+    source: "Impl Plan v2.1 §Day 2 -- episode duration is a Day-2 authored parameter"
+
+medium:
+  pending: "Day 4"
+  attempts_per_hour: {value: null, pending: "Day 4"}
+  attempts_per_hour_band: {min: null, max: null, pending: "Day 4"}
+  ip_pool_size: {value: null, pending: "Day 4"}
+  distinct_cards: {value: null, pending: "Day 4"}
+  bin_pool_size: {value: null, pending: "Day 4"}
+  foreign_bin_share: {value: null, pending: "Day 4"}
+  amount_sampler: {value: null, pending: "Day 4"}
+  amount_quantile_band: {min: null, max: null, pending: "Day 4"}
+  session_reuse: {value: null, pending: "Day 4"}
+  hour_of_day_placement: {value: null, pending: "Day 4"}
+  episode_duration_s: {value: null, pending: "Day 4"}
+
+evasive:
+  pending: "Day 7"
+  attempts_per_hour: {value: null, pending: "Day 7"}
+  attempts_per_hour_band: {min: null, max: null, pending: "Day 7"}
+  ip_pool_size: {value: null, pending: "Day 7"}
+  distinct_cards: {value: null, pending: "Day 7"}
+  bin_pool_size: {value: null, pending: "Day 7"}
+  foreign_bin_share: {value: null, pending: "Day 7"}
+  amount_sampler: {value: null, pending: "Day 7"}
+  amount_quantile_band: {min: null, max: null, pending: "Day 7"}
+  session_reuse: {value: null, pending: "Day 7"}
+  hour_of_day_placement: {value: null, pending: "Day 7"}
+  episode_duration_s: {value: null, pending: "Day 7"}

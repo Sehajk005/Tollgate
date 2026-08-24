@@ -167,4 +167,25 @@ Stated so their absence reads as scope, not oversight:
 - **Merchant-server compromise.** If the merchant's server is owned, every M-class attestation is forged and Tollgate is blind. Out of scope.
 - **Distributed attack below every threshold.** An attacker at one attempt per hour per entity, foreign BINs, matched amounts, is not detectable from a single merchant's vantage point. This is the honest limit of the merchant-vantage decision, and it is the argument for the cross-merchant roadmap item — not a defect to hide.
 - **Cardholder-side fraud.** Out of scope by NG1.
+
+---
+
+## 9. Day-2 addendum (Decisions.md decision 34)
+
+`/v1/stream` (SSE) remains unauthenticated, unchanged from Day 1. Day 2 extends its payload
+with `rules_fired` and `feature_snapshot` (raw per-rule counts) so the D1 dashboard can render
+a live ticker and threat band. Publishing `feature_snapshot` on an unauthenticated stream is a
+real, if accepted, information leak: it discloses how close an entity sits to a rule threshold,
+which is exactly the kind of evasion-assisting detail §2's trust-boundary table treats source IP
+and window state as needing protection from. **Accepted mitigation for Day 2:** the demo binds
+loopback only (`:8080` on `127.0.0.1`); no untrusted network can reach `/v1/stream`. Stream
+authentication is explicit Day-7 hardening, not addressed here. `card_hash` is never published
+on the stream, on any day.
+
+Separately, `TRUSTED_EDGE_HOSTS` (`services/scorer/net.py`, §2's row above) is now load-bearing
+for the Day-2 demo, not just theoretically exercised: `services/scorer/replay.py::ReplayDriver`
+passes each simulated event's `ip` directly into `score_attempt(..., ip=ev.ip)`, bypassing
+`resolve_client_ip()`'s TCP-peer/`X-Forwarded-For` resolution entirely — this is a trusted,
+in-process code path (the replay driver, not an external request), not a widening of what
+`TRUSTED_EDGE_HOSTS` accepts over HTTP.
 - **The narrator being wrong.** It is a summary of numbers that are displayed underneath it. Mitigation is the layout, not the model.

@@ -36,7 +36,7 @@
 | Transport | **Server-Sent Events** | Was WebSocket; traffic is one-way, SSE reconnects natively |
 | Persistence | SQLite WAL + **one `schema.sql`** | Alembic removed |
 | Dashboard | React 18 + Vite + Recharts + Tailwind | — |
-| Simulator + eval | NumPy, pandas, scikit-learn, matplotlib | Baseline now resampled from an external order log |
+| Simulator + eval | scikit-learn, matplotlib (eval); **stdlib + pyyaml only at runtime for `packages/simulator`** — pandas/openpyxl are a dev-only `pyproject.toml` extra, used exclusively once by `scripts/distill_baseline.py` | Baseline now resampled from an external order log (Day 2: UCI Online Retail II, distilled to a committed integer-only profile, not re-run at simulator runtime) |
 | Load test | 60-line asyncio script | Locust removed |
 
 **Explicitly rejected:** Kafka, Postgres for hot features, deep learning for Layer 1, isolation forest for Layer 2, HyperLogLog, WebSockets, Alembic.
@@ -81,9 +81,9 @@ v1 wrote `ZADD tg:{space}:{key} {epoch_ms}` and never said which epoch. Both ava
 
 **v2 resolution — three parts.**
 
-1. **A `Clock` is injected everywhere.** `packages/clock` exposes `now_ms()`. `SystemClock` returns wall time. `VirtualClock(speed=60, epoch=t0)` returns `t0 + (wall_elapsed × 60)`. Nothing in the codebase calls `time.time()` directly — asserted by a grep test.
+1. **A `Clock` is injected everywhere.** `packages/clock` exposes `now_ms()`. `SystemClock` returns wall time. `VirtualClock(epoch_ms)` is a pure counter with `advance_ms()`/`set_ms()` — it never reads the wall clock and takes no `speed` parameter (Decisions.md decision 20; superseded from this section by decision 27). Nothing in the codebase calls `time.time()` directly — asserted by a grep test (`tests/acceptance/test_clock_discipline.py`).
 2. **Windowing uses `ingest_time = clock.now_ms()`,** assigned server-side at request entry. S-class, unforgeable. Client `ts` is stored for audit and produces one evidence value, `clock_skew_s`. It never touches a window.
-3. **Replay drives the same clock.** Under 60× replay the virtual clock advances 60 virtual seconds per wall second, and *every* window boundary, TTL, CUSUM bucket, and enforcement expiry reads that clock. A 5-minute window is 5 virtual minutes in both demo and production. **Window semantics are invariant to replay speed.**
+3. **Replay drives the same clock, and speed lives in the replay driver, not the clock (Decisions.md decision 27).** `services/scorer/replay.py::ReplayDriver` reads virtual time from the generated event stream's own `t_ms` (`vclock.set_ms(epoch_ms + ev.t_ms)`); `speed` only scales the driver's `asyncio.sleep()` between sends, so `speed=0` (no sleep) and `speed=60` produce byte-identical decision sequences — proved by `tests/acceptance/test_replay_virtual_time.py`'s A13, not merely hoped for. Every window boundary, TTL, and (Day 6) CUSUM bucket reads the same clock the events are timestamped against. A 5-minute window is 5 virtual minutes regardless of replay speed. **Window semantics are invariant to replay speed.**
 
 What compression *does* change is wall-clock request throughput, which is a load statement, not a detection statement. The demo banner says exactly that, and the distinction converts v1's honesty banner from a liability into a point in your favour.
 
@@ -103,8 +103,24 @@ Base `http://localhost:8080`. Auth: `X-Tollgate-Key` (score path). `/v1/outcome`
 | POST | `/v1/incidents/{id}/action` | Operator confirm/override/resolve | — |
 | GET | `/v1/metrics/live` | Rolling counters | — |
 | **SSE** | `/v1/stream` | Live event + incident push | — |
-| POST | `/v1/replay/start` · `/stop` | Demo control | demo only |
+| POST | `/v1/replay/start` · `/stop` · `/reset` | Demo control | demo only |
+| GET | `/v1/replay/status` | Current replay progress | demo only |
 | GET | `/healthz` · `/metrics` | Liveness, Prometheus text | — |
+
+**Day-2 replay shapes** (`services/scorer/replay.py`; Decisions.md decisions 25-27).
+`POST /v1/replay/start` — API-key authed, same as `/v1/score` — body
+`{tier: "easy"|"hard", seed: int=42, speed: int=0, epoch_ms: int|null=null,
+hours: int=3}`, 202 + `ReplayStatus`; 409 if already running. `speed=0` means
+no wall-clock pacing (full tilt); `speed=N>0` sleeps `Δt_ms / 1000 / N`
+between events. `POST /v1/replay/stop` → 200 + `ReplayStatus` (cooperative:
+the running loop checks a flag each iteration). `POST /v1/replay/reset` →
+clears `InMemoryWindowStore` and the threat rollup, then 200 + `ReplayStatus`
+(required, not convenient: `VirtualClock` cannot move backwards, so without
+Reset a second Launch in the same process inherits stale window state).
+`GET /v1/replay/status` → `ReplayStatus`: `{state: "idle"|"running"|
+"stopped"|"finished", tier, seed, speed, sent, total, episode_id,
+virtual_time_ms}` — also mirrored onto every SSE event's `replay` key so the
+DC strip needs no separate polling while events are flowing.
 
 ### 5.1 Admission control ladder (fixes F5's missing rung)
 
@@ -359,12 +375,25 @@ permanent detector.
 
 Deterministic and seeded; identical config + seed ⇒ byte-identical stream.
 
-- **`BaselineTrafficModel`** — arrivals and amounts **resampled from a public real-world e-commerce order log**, rescaled to `store_profile.yaml`; fictional long-tailed BIN sampling; organic decline model; foreign-issued share matching a plausible Indian merchant mix.
-- **`AttackModel`** — easy / medium / hard per `attack_tiers.yaml`, every parameter carrying a `source:` field (asserted). Attacks now draw predominantly **foreign-issued** BINs per Threat Model §7b.
+**Package layout (Day 2; Decisions.md decision 28), `packages/simulator/`:**
+`rng.py` (seeded `getrandbits`-only sampling, `SubStream` per `(seed, label)`),
+`profile.py` (loads `config/store_profile.yaml` + the SHA-verified distilled
+dataset profile), `identity.py` (opaque card hashes, fictional BIN pool),
+`baseline.py` (`BaselineTrafficModel`), `attack.py` (`AttackModel`, easy/hard
+shipped Day 2), `stream.py` (merge + canonical serialization + episode
+records), `generate.py` (`__main__` CLI and `build_stream()`, the in-process
+entry point `services/scorer/replay.py` also calls). Runtime is **stdlib +
+pyyaml only** — pandas/openpyxl are a dev-only `pyproject.toml` extra used
+exclusively by `scripts/distill_baseline.py`, which lives outside
+`packages/simulator` specifically so the package's transitive import
+closure never has a reason to include them (verified: `-m safety`).
+
+- **`BaselineTrafficModel`** — arrivals and amounts **resampled from a public real-world e-commerce order log** (UCI Online Retail II, CC BY 4.0 — Decisions.md decision 29), rescaled to `store_profile.yaml`; fictional long-tailed BIN sampling; organic decline model; foreign-issued share matching a plausible Indian merchant mix.
+- **`AttackModel`** — easy / hard shipped Day 2 per `attack_tiers.yaml`, every parameter carrying a `source:` field (asserted, `-m` acceptance test A10). `medium`/`evasive` declared `pending: "Day 4"`/`"Day 7"`. Attacks now draw predominantly **foreign-issued** BINs per Threat Model §7b.
 - **`EvasionSearch`** — produces Tier E by optimising attack parameters against the trained detector (Eval Protocol §5).
 - **`NegativeControlModel`** — flash sale, corporate NAT, Indian CGNAT, retry storm, subscription batch, **genuine foreign/NRI traffic**, **legitimate customer on the attacker's CGNAT IP**.
 
-**Safety constraints, enforced in code and asserted by `-m safety`:** opaque synthetic card identity, no PAN generation, no Luhn construction anywhere, fictional BINs, no expiry/CVV enumeration, no network egress from the simulator package.
+**Safety constraints, enforced in code and asserted by `-m safety`:** opaque synthetic card identity, no PAN generation, no Luhn construction anywhere, fictional BINs, no expiry/CVV enumeration, no network egress from the simulator package (checked both by a static transitive AST import-closure scan and, at runtime, by a full generation run with `socket.socket` monkeypatched to raise).
 
 ---
 
@@ -412,4 +441,4 @@ open http://localhost:5174                # dashboard
 | 3 | Bucket size for L2a | 10 s virtual | Smaller detects faster, noisier; tuned on negative controls |
 | 4 | Platt vs. isotonic | **Platt**, isotonic behind a flag | Both reported; ship the better held-out Brier |
 | 5 | ρ (smallest rate ratio worth detecting) | 5 | Lower detects subtler attacks, raises ARL₀ pressure |
-| 6 | External baseline dataset | UCI Online Retail II or equivalent | If integration slips past Day 4, fall back and **say so in the report** |
+| 6 | External baseline dataset | **Resolved Day 2 (Decisions.md decision 29):** UCI Online Retail II, CC BY 4.0, verified 1,067,371 rows / 43.5 MB xlsx / doi:10.24432/C5CG6D. Distilled to a committed, integer-only, SHA-verified profile (`data/baseline/online_retail_ii.profile.json`); raw xlsx gitignored, never committed. | None realized — the generative fallback stays implemented behind the same sampler interface, unused |

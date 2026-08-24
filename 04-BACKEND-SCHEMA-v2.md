@@ -496,11 +496,47 @@ Retention is disabled in the demo build so the seeded stream stays queryable. Sa
 1. sqlite3 tollgate.db < schema.sql          → schema (no Alembic)
 2. python -m scripts.seed_merchant           → merchant + baseline + config v1
 3. python -m scripts.load_bin_table          → bin_metadata (synthetic)
-4. python -m simulator.generate --seed 42    → data/streams/{events,labels}.jsonl
-5. python -m scripts.replay --speed 0        → events through /v1/score at full tilt,
-                                                writing attempt_score.feature_snapshot
+4. python -m packages.simulator.generate --seed 42 --tier easy
+     --out data/streams/events.jsonl --labels data/streams/labels.jsonl
+     --episodes data/streams/episodes.jsonl    → the three JSONL streams below
+     (Decisions.md decision 28: package path corrected from `simulator.generate`)
+5. python -m scripts.replay --speed 0        → events through the scoring core
+                                                (in-process, not HTTP — Decisions.md
+                                                decision 25), writing
+                                                attempt_score.feature_snapshot
 6. python -m scripts.train_l1                → model + Platt calibrator FROM the snapshots
 7. python -m eval.harness --split all        → eval_run rows + artifacts
 ```
 
 **Step 5 is new and it is the structural fix for F8.** Training reads what the online path logged, so there is exactly one feature implementation and point-in-time correctness is free. It also means the walking skeleton must exist before the model does — which is why the Implementation Plan front-loads it.
+
+### 9.1 Simulator JSONL record shapes (Day 2; previously unspecified anywhere)
+
+One canonical JSON object per line (`json.dumps(sort_keys=True,
+separators=(",",":"), ensure_ascii=True)` + `"\n"`, files opened
+`newline="\n"` — Decisions.md decision 30), produced by
+`packages/simulator/stream.py`.
+
+**`events.jsonl`** — every value is an `int` or `str`, no floats, no
+`is_attack`/tier marker in any identifier:
+```json
+{"amount_minor":118400,"bin":"999014","card_hash":"9f2c...","currency":"INR","event_id":"e-0000431","ip":"198.51.100.23","seq":431,"session_id":"s-00194...","t_ms":7382914}
+```
+`event_id`/`seq` are assigned from the position in the **merged** (baseline +
+attack, sorted by `t_ms`) stream — never a per-source counter.
+
+**`labels.jsonl`** — one line per event, keyed by `event_id`:
+```json
+{"decline_code":null,"episode_id":null,"event_id":"e-0000431","gateway_status":"authorized","is_attack":false,"seq":431}
+```
+`gateway_status` is `"authorized"|"declined"` (matches this schema's own
+`auth_outcome.gateway_status` DDL comment, not the Day-2 plan's illustrative
+`"approved"` sketch).
+
+**`episodes.jsonl`** — columns mirror `episode_truth` (§3) exactly:
+```json
+{"attempt_count":612,"distinct_cards":598,"ended_at":9120000,"episode_id":"ep-easy-42-3600000","evasion_params":null,"generator_seed":42,"kind":"attack","scenario":null,"started_at":8400000,"tier":"easy"}
+```
+`attempt_count`/`distinct_cards` are recounted from `labels.jsonl`, not
+carried independently (`tests/acceptance/test_simulator_episodes.py`'s A5
+asserts they match).

@@ -21,7 +21,10 @@ export default function App() {
         body: JSON.stringify({
           event_id: `evt-${Date.now()}-${Math.random().toString(36).slice(2)}`,
           card_hash: `card-${Math.random().toString(36).slice(2)}`,
-          bin: "411111",
+          // Fictional BIN (Day-2 Plan §D open item): 411111 is a real Visa
+          // test BIN; packages/simulator/identity.py's fictional pool uses
+          // the reserved 999xxx prefix, disjoint from any real IIN range.
+          bin: "999001",
           amount_minor: 100,
           currency: "INR",
         }),
