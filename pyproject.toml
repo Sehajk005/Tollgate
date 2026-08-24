@@ -20,6 +20,7 @@ dev = [
 markers = [
     "characterization: change-detector tests, never acceptance gates (Impl Plan v2.1 §1.2)",
     "slow: exercises a real subprocess (durability / lock-contention tests)",
+    "safety: simulator import-closure / network-egress safety tests (Day 2 §I)",
 ]
 
 [build-system]
