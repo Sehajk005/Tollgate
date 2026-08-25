@@ -1,0 +1,24 @@
+# Source: TRD v2 §3 -- repository layout names docker-compose.yml at the
+# repo root. Day-3 Plan §0: two Redis services -- `redis` is the real
+# window-store backend; `redis-small` is a deliberately memory-capped
+# instance used ONLY by the eviction-vs-TTL differential test
+# (tests/acceptance/test_redis_eviction.py), never by the application.
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+
+  redis-small:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    command:
+      [
+        "redis-server",
+        "--save", "",
+        "--appendonly", "no",
+        "--maxmemory", "2mb",
+        "--maxmemory-policy", "allkeys-lru",
+      ]

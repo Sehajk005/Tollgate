@@ -14,6 +14,12 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "httpx>=0.27",
+    # Source: Day-3 Plan Step 0 -- RedisWindowStore backend + differential
+    # tests need a real client; pandas moves here too since
+    # tests/oracles/pandas_windows.py (test-only, Decision -- never a data
+    # path) needs it and dev is the extras group the test suite runs under.
+    "redis>=5.0",
+    "pandas>=2.2",
 ]
 # Source: Day-2 Plan Step 3 -- dev-only, used exactly once by
 # scripts/distill_baseline.py to produce the committed derived profile.
@@ -30,6 +36,7 @@ markers = [
     "characterization: change-detector tests, never acceptance gates (Impl Plan v2.1 §1.2)",
     "slow: exercises a real subprocess (durability / lock-contention tests)",
     "safety: simulator import-closure / network-egress safety tests (Day 2 §I)",
+    "redis: requires a reachable Redis (TOLLGATE_REDIS_URL); skips otherwise (Day-3 Plan §5)",
 ]
 
 [build-system]

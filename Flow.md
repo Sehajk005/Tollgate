@@ -43,14 +43,24 @@ POST /v1/score  (services/scorer/routes_score.py:score) │
   │     (ulid or state.ulid).new()                          packages/clock/ids.py (UlidGenerator)
   │     -- attempt_uid minted from the clock, not wall time
   │
-  ├─ 6. DayOneRules.evaluate(RuleInput(...))                packages/detect/rules.py
-  │     For each of R1/R2/R3:
-  │       InMemoryWindowStore.record_and_read(WindowRequest) packages/features/memory_store.py
-  │         -- window_key(merchant_id, space, key, metric)   packages/features/keys.py
-  │         -- add member at ingest_ms, trim <= ingest_ms - window_ms, return count
+  ├─ 6. [Day 3] classify_ua(user_agent) -> ua_class; ipua_key(ip, ua_class)  packages/features/compute.py
+  │     compute_features(state.window_store, FeatureContext(...))
+  │       -> ONE store.score_path(ScorePathRequest) call                    TRD §6.3, one round trip
+  │          -- InMemoryWindowStore.score_path() or RedisWindowStore.score_path()
+  │             (EVALSHA windows.lua): SET NX idem -> ZADD every window ->
+  │             ZREMRANGEBYSCORE trim -> ZCARD/ZRANGE read -> eidr SADD ->
+  │             card24 INCR -> CUSUM bucket HINCRBY, all in one call
+  │       -> FeatureVector (24 canonical features + trusted/degraded_reason)
+  │     DayOneRules.evaluate_from_features(features)          packages/detect/rules.py
+  │       -- reads R1/R2/R3's three statistics from the vector already fetched above
+  │          (the locked evaluate()/record_and_read() path is untouched and still used
+  │          directly by tests/acceptance/test_rules.py and test_rules_geometry.py)
   │     -> RulesEvaluation(results=(R1, R2, R3))
   │        .minimum_tier  (Decision.ALLOW if none fired, else the max fired tier)
   │        .fired_names, .feature_snapshot, .rule_score()
+  │     feature_snapshot = features.snapshot() merged with evaluation.feature_snapshot
+  │        -- 24 canonical keys + trusted/baseline_coverage, plus the Day-1/2 raw
+  │           rule-level keys (distinct_cards_per_ip_5m etc.) the dashboard already reads
   │
   ├─ 7. apply_auto_ceiling(evaluation.minimum_tier)          packages/detect/policy.py
   │     -- clamps to Decision.CHALLENGE if a rule ever floors above it
@@ -315,22 +325,67 @@ services/dashboard (DC strip)                services/scorer
 1"` shows the same non-`allow` decisions after the drainer catches up
 (verified via `test_day2_e2e.py`'s post-drain SQLite assertion).
 
+## 11. [Day 3] The real feature path -- `compute_features()` and the Lua script
+
+Source: Day-3 Plan / TRD §6.3-§6.4, §6.11. `packages/features/compute.py::compute_features()`
+is now **the** feature definition (TRD §6.4), called from step 6 above. It issues exactly one
+`WindowStore.score_path(ScorePathRequest)` call, positionally building a `WindowRequest` per
+window it needs (10 on Day 3: `ip`/`ipua`/`bin`/`session` spaces across 60s/5m/30m widths),
+then assembles all 24 `FEATURE_NAMES` from the single returned `ScorePathSnapshot`. Un-fed
+slots (no `store_baseline` until Day 4, no `/v1/outcome` until Day 7, no client `ts`) emit
+`0.0` plus an explicit coverage field rather than NaN or None (Decisions.md decision 43).
+
+```
+RedisWindowStore.score_path()                    packages/features/redis_store.py
+  -- EVALSHA windows.lua (SCRIPT LOAD once, at construction -- Decisions.md decision
+     covers the one-round-trip invariant; tests/acceptance/test_one_round_trip.py)
+  -- KEYS: idem, eidr, card24, cusum, one sorted-set key per window
+     (window_key() now includes window_ms -- Decisions.md decision 40)
+  -- idem key = sha256(merchant_id || event_id || payload_digest), NOT payload_digest
+     alone (Decisions.md decision 41 -- a real bug found and fixed via the locked
+     Day-1 R1 acceptance test)
+  -- a background thread on its OWN connection polls INFO stats:evicted_keys and
+     latches trusted=False, degraded_reason="redis_eviction" on any rise, distinct
+     from ordinary TTL expiry (Decisions.md decision 44)
+
+InMemoryWindowStore.score_path()                 packages/features/memory_store.py
+  -- identical semantics, single-process, always trusted=True; the pre-committed
+     20:00 fallback, verified by the same differential test as Redis
+```
+
+`ScorerState.build_default()` (`services/scorer/deps.py`) selects `RedisWindowStore` when
+`TOLLGATE_REDIS_URL` is set and reachable, else `InMemoryWindowStore` -- logged either way,
+never silent.
+
+`packages/narrator/template.py::render(EvidenceBundle)` renders `{"narrative",
+"confidence_note"}` from closed-vocabulary, pseudonymised evidence only (Threat Model §5);
+not yet wired into `score_attempt()` -- Day 3 scope is "a narrative renders" (verified by its
+own test), full incident-pipeline wiring is Day 6.
+
+---
+
 ## 10. What does NOT exist yet (explicitly deferred)
 
-- No `/v1/outcome` route (Day 7).
-- No Redis; `InMemoryWindowStore` is the only `WindowStore` backend (Day 3
-  adds `RedisWindowStore` behind the same protocol).
-- No idempotency guard (`SET NX` on a payload digest) -- `payload_digest` is
-  computed and stored, but nothing rejects a duplicate yet (Day 7).
-- No CUSUM / drift detection / real incidents / entity resolution --
-  `packages/detect/threat_state.py`'s rollup is an explicit Day-2 stand-in
-  Day 6's incident detector replaces (Day 6).
-- No narrator, no D3/D6 dashboard screens, no design tokens, no Stream Rail
-  (Day 8).
-- No BIN metadata join -- `tier_ladder` is hardcoded `"domestic"`.
+- No `/v1/outcome` route (Day 7); `decline_rate_per_ip_5m`, `invalid_cvv_share_ip_5m`,
+  `outcome_coverage_ratio` stay at their Day-3 neutral `0.0`.
+- No `store_baseline` row (Day 4); `distinct_cards_per_ip_5m_q`,
+  `distinct_cards_per_ipua_5m_q`, `amount_percentile_vs_store`, `store_volume_deviation_
+  sigma`, `store_decline_rate_deviation_sigma`, `foreign_bin_share_sigma` stay at `0.0`.
+- No CUSUM statistic (`S_t`) -- Day 3 builds only the raw per-bucket attempt counter
+  `windows.lua` step 6 names; `τ_flag`-gated counting is explicitly deferred to Day 6
+  (Decisions.md decision 45). No drift detection / real incidents / entity resolution --
+  `packages/detect/threat_state.py`'s rollup is an explicit Day-2 stand-in Day 6's incident
+  detector replaces.
+- No D3/D6 dashboard screens, no design tokens, no Stream Rail, no Gemini narrator backend
+  (Day 8); the template narrator (§11 above) is not yet called from `score_attempt()`.
+- No BIN metadata join -- `tier_ladder` is hardcoded `"domestic"`, `bin_is_foreign_issued`
+  and `foreign_bin_share_5m` stay at `0.0`.
 - No `medium`/`evasive` attack tiers (`config/attack_tiers.yaml` declares
   them `pending: "Day 4"`/`"Day 7"`); no negative-control selector, no
   flood/kill-scorer DC toggles (Day 4 / Day 7).
 - No stream authentication -- `/v1/stream` publishes `rules_fired` and
   `feature_snapshot` unauthenticated; accepted for the loopback-bound demo
   (Threat Model v2 addendum, decisions.md decision 34), hardened Day 7.
+- `tests/fixtures/handmade_40.jsonl` (the independent human-authored oracle) has not been
+  supplied yet; `tests/acceptance/test_handmade_40.py` xfails with a named reason until it is
+  (Decisions.md decision 14 -- must not be generated by the implementation agent).

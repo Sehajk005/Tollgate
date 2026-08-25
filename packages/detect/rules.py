@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 from packages.contracts.decision import Decision
+from packages.features.compute import FeatureVector
 from packages.features.store import WindowRequest, WindowStore
 
 WINDOW_60S_MS = 60_000
@@ -134,6 +135,50 @@ class DayOneRules:
                 window_ms=WINDOW_5M_MS,
             )
         ).count
+
+        results = (
+            RuleResult(
+                "attempts_per_ip_60s",
+                r1_count >= self._r1_threshold,
+                Decision.THROTTLE,
+                r1_count,
+                self._r1_threshold,
+            ),
+            RuleResult(
+                "distinct_cards_per_ip_5m",
+                r2_count >= self._r2_threshold,
+                Decision.CHALLENGE,
+                r2_count,
+                self._r2_threshold,
+            ),
+            RuleResult(
+                "distinct_cards_per_bin_5m",
+                r3_count >= self._r3_threshold,
+                Decision.CHALLENGE,
+                r3_count,
+                self._r3_threshold,
+            ),
+        )
+        return RulesEvaluation(results)
+
+    def evaluate_from_features(self, features: FeatureVector) -> RulesEvaluation:
+        """
+        Source: Day-3 Plan Step 6 / TRD §6.3 -- the one-round-trip score
+        path already fetched every window count via compute_features();
+        this reads R1-R3's three statistics from that single fetch instead
+        of issuing three more record_and_read() calls (which would break
+        the one-round-trip invariant). evaluate()/RuleInput above are
+        untouched -- every locked Day-1 acceptance test that constructs
+        DayOneRules directly and calls evaluate() keeps passing unmodified
+        (Decision 13). R2 reads distinct_cards_per_ip_5m_raw because
+        FEATURE_NAMES only carries its quantile-transformed sibling
+        (compute.py module docstring); R1/R3 read their un-suffixed
+        canonical feature values directly, since those ARE the rule
+        statistics (Decision 17).
+        """
+        r1_count = int(round(features.values["attempts_per_ip_60s"]))
+        r2_count = int(round(features.distinct_cards_per_ip_5m_raw))
+        r3_count = int(round(features.values["distinct_cards_per_bin_5m"]))
 
         results = (
             RuleResult(
