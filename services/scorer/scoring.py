@@ -4,14 +4,23 @@ so both /v1/score (SystemClock, the storefront) and the replay driver
 (VirtualClock, Step 7) call the identical path. A pure move of Day-1
 routes_score.py steps 5-11 (state.clock.now_ms() through the SSE publish);
 the HTTP route keeps auth + IP resolution + Stopwatch and delegates here.
-No behaviour change of any kind: the 55 Day-1 tests are the proof, and this
-file introduces zero edits to any of them.
 
 `clock` and `ulid` both default to `state.clock` / `state.ulid` -- the
 storefront path never passes either, so it is byte-for-byte the same
 control flow Day 1 shipped. The replay driver passes its own VirtualClock
 and a seed-derived UlidGenerator so that attempt_uid minting, not just
 decisions, is reproducible under A13's speed=0-vs-60 comparison.
+
+Day-3 Plan Step 7 -- the three separate record_and_read() calls (one per
+rule) are replaced by one compute_features() call (itself exactly one
+store.score_path() round trip, TRD §6.3), then
+DayOneRules.evaluate_from_features() reads R1-R3 from that single fetch.
+feature_snapshot is now the canonical 24-feature vector merged with the
+rule-level snapshot (Day-3 Plan §2 D6): compute.py's FEATURE_NAMES uses a
+quantile-suffixed name for R2's statistic, while the rules dict keeps the
+Day-1/2 raw key names (distinct_cards_per_ip_5m etc.) that
+services/dashboard/src/App.jsx already reads -- the two dicts do not
+collide on keys carrying different values.
 """
 
 from __future__ import annotations
@@ -25,7 +34,7 @@ from packages.clock.stopwatch import Stopwatch
 from packages.contracts.records import AttemptRecord, ScoreRecord
 from packages.contracts.wire import ScoreRequest, ScoreResponse
 from packages.detect.policy import apply_auto_ceiling
-from packages.detect.rules import RuleInput
+from packages.features.compute import FeatureContext, classify_ua, compute_features, ipua_key
 from services.scorer.deps import ScorerState
 
 
@@ -47,15 +56,24 @@ async def score_attempt(
     ingest_ms = active_clock.now_ms()
     attempt_uid = active_ulid.new()
 
-    rule_input = RuleInput(
+    ua_class = classify_ua(user_agent)
+    ipua = ipua_key(ip, ua_class)
+
+    feature_ctx = FeatureContext(
         merchant_id=merchant_id,
         attempt_uid=attempt_uid,
         ingest_ms=ingest_ms,
+        payload_digest=state.payload_digest(body),
+        event_id=body.event_id,
         ip=ip,
+        ua_class=ua_class,
         card_hash=body.card_hash,
         bin=body.bin,
+        amount_minor=body.amount_minor,
+        session_id=body.session_id,
     )
-    evaluation = state.rules.evaluate(rule_input)
+    features = compute_features(state.window_store, feature_ctx)
+    evaluation = state.rules.evaluate_from_features(features)
     decision = apply_auto_ceiling(evaluation.minimum_tier)
 
     latency_ms = active_stopwatch.elapsed_ms()
@@ -79,10 +97,13 @@ async def score_attempt(
         currency=body.currency,
         ip=ip,
         asn=None,
-        ua_class=None,
-        ipua_key=None,
+        ua_class=ua_class,
+        ipua_key=ipua,
         client_evidence=client_evidence,
     )
+
+    feature_snapshot = features.snapshot()
+    feature_snapshot.update(evaluation.feature_snapshot)
 
     score_value = state.rule_score(evaluation)
     score_record = ScoreRecord(
@@ -99,7 +120,7 @@ async def score_attempt(
         calibrator_version="identity",
         policy_version=state.policy_version,
         rules_fired=evaluation.fired_names,
-        feature_snapshot=evaluation.feature_snapshot,
+        feature_snapshot=feature_snapshot,
         top_contributors=None,
         incident_id=None,
         latency_ms=latency_ms,
@@ -135,7 +156,7 @@ async def score_attempt(
         "bin": body.bin,
         "ingest_time": ingest_ms,
         "rules_fired": evaluation.fired_names,
-        "feature_snapshot": evaluation.feature_snapshot,
+        "feature_snapshot": feature_snapshot,
         "threat_state": threat_state,
         "regime": "in_control",
         "replay": replay_snapshot,

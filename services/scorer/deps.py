@@ -6,6 +6,8 @@ on app.state so route handlers can depend on it via FastAPI's Depends().
 
 from __future__ import annotations
 
+import logging
+import os
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +27,8 @@ from packages.storage.bus import EventBus, InProcessEventBus
 from packages.storage.db import connect
 from packages.storage.drainer import Drainer
 from packages.storage.spool import Spool
+
+logger = logging.getLogger("tollgate.scorer")
 
 if TYPE_CHECKING:
     import asyncio
@@ -73,13 +77,45 @@ class ScorerState:
         return evaluation.rule_score()
 
     @staticmethod
+    def _build_window_store() -> WindowStore:
+        """
+        Source: Day-3 Plan Step 7 -- RedisWindowStore is selected when
+        TOLLGATE_REDIS_URL is set AND reachable; any other case (unset,
+        unreachable) falls back to InMemoryWindowStore, which is also the
+        pre-committed Day-3 20:00 fallback (Impl Plan Day 3 exit trigger).
+        One place, logged at startup so which backend is live is never a
+        silent question.
+        """
+        redis_url = os.environ.get("TOLLGATE_REDIS_URL")
+        if not redis_url:
+            logger.info("TOLLGATE_REDIS_URL not set; using InMemoryWindowStore")
+            return InMemoryWindowStore()
+
+        try:
+            import redis as redis_lib
+
+            from packages.features.redis_store import RedisWindowStore
+
+            client = redis_lib.Redis.from_url(redis_url)
+            client.ping()
+            logger.info("Connected to Redis at %s; using RedisWindowStore", redis_url)
+            return RedisWindowStore(client)
+        except Exception:  # noqa: BLE001 -- any connection/import failure falls back
+            logger.exception(
+                "TOLLGATE_REDIS_URL=%s set but unreachable; falling back to "
+                "InMemoryWindowStore (single-process limitation applies)",
+                redis_url,
+            )
+            return InMemoryWindowStore()
+
+    @staticmethod
     def build_default(
         db_path: Path = Path("tollgate.db"),
         spool_dir: Path = Path("spool"),
     ) -> "ScorerState":
         clock = SystemClock()
         ulid = UlidGenerator(clock=clock, rng=random.Random())
-        window_store = InMemoryWindowStore()
+        window_store = ScorerState._build_window_store()
         rules = DayOneRules(window_store)
         spool = Spool(spool_dir)
         drainer = Drainer(db_path=db_path, spool_path=spool.path)

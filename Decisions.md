@@ -1598,3 +1598,318 @@ None new — Decision 38 as already named in the Day-2 plan, now implemented.
 ### Implementation impact
 `config/attack_tiers.yaml` (11 real, distinct citations across `easy`/`hard`'s 9 populated
 parameters each). `tests/acceptance/test_attack_tiers.py::TestA10AttackTiersAntiCircularity`.
+
+---
+
+## Decision 39: Day-3 environment — `docker-compose.yml` (two Redis services), `redis`/`pandas` moved into `dev`
+
+### Context
+Day 3 requires a real Redis backend and a differential test against `tests/oracles/
+pandas_windows.py`. Neither `redis-server`, the `redis` Python package, nor a
+`docker-compose.yml` existed on this machine; TRD §3's repository layout already names
+`docker-compose.yml` at the repo root.
+
+### Decision
+`docker-compose.yml` defines two services: `redis` (the real backend, port 6379) and
+`redis-small` (`--maxmemory 2mb --maxmemory-policy allkeys-lru`, port 6380), the latter used
+**only** by `tests/acceptance/test_redis_eviction.py`, never by the application.
+`pyproject.toml`'s `dev` extra gains `redis>=5.0` and `pandas>=2.2` (pandas was previously
+only under `data`, which the differential-test suite does not install); a `redis` pytest
+marker is registered for tests that skip when `TOLLGATE_REDIS_URL` is unreachable.
+
+### Alternatives considered
+A single Redis instance with `CONFIG SET maxmemory` toggled mid-test — rejected: mutating a
+shared instance's memory ceiling introduces test-order dependence and risks leaving the
+application's own instance degraded if a test fails mid-run.
+
+### Reasoning
+A dedicated, tiny, always-degradable instance keeps the eviction test's blast radius to
+itself and makes "the app never sees `redis-small`" a structural fact, not a discipline.
+
+### Trade-off
+Two containers instead of one; accepted, since Docker Compose already exists for exactly
+this.
+
+### Specification impact
+None — TRD §3 already named `docker-compose.yml`; this implements it.
+
+### Implementation impact
+`docker-compose.yml`, `pyproject.toml`.
+
+---
+
+## Decision 40: `window_key()` includes `window_ms` — a correctness fix, not a style choice
+
+### Context
+Backend Schema §4's documented Redis key pattern, `tg:{m}:w:{space}:{key}:{metric}`, omits
+window width entirely. Day 1/2 never exposed this because R1-R3 each query exactly one
+window width per `(space, metric)` pair. Day 3's `compute.py` queries `attempts_per_ip_60s`
+**and** `attempts_per_ip_5m` — same space, same key, same metric, different `window_ms` — so
+two logical windows would share one physical sorted set under the documented pattern.
+
+### Decision
+`window_key()` now takes `window_ms` as a required fifth argument:
+`tg:{m}:w:{space}:{key}:{metric}:{window_ms}`. Verified before changing it that no test pins
+the previous un-suffixed string (grep across `tests/`, `packages/`, `services/`).
+
+### Alternatives considered
+Leaving the pattern as documented and accepting the collision — rejected: two windows
+destructively co-trimming each other (whichever `ZREMRANGEBYSCORE` runs first silently
+discards entries the other window still needed) is a correctness bug, not a documentation
+gap.
+
+### Reasoning
+This is the "repository differs from specification" case the Day-3 brief calls out
+explicitly: identify the discrepancy, determine the correct action from the existing
+mechanism's own stated purpose (a correct sliding window per declared width), don't silently
+redesign anything else.
+
+### Trade-off
+None identified — purely additive to an unspecified format detail, verified unpinned.
+
+### Specification impact
+Backend Schema §4's key pattern should be read as illustrative, not literal, once multiple
+window widths per metric are in play. No document edit made; this decision is the record.
+
+### Implementation impact
+`packages/features/keys.py`, `packages/features/memory_store.py` (both `window_key()` call
+sites updated), `packages/features/redis_store.py` (Redis key construction uses the same
+helper, so both backends stay byte-identical in key naming by construction).
+
+---
+
+## Decision 41: The idempotency key is `sha256(merchant_id ‖ event_id ‖ payload_digest)`, never `payload_digest` alone
+
+### Context
+Discovered via `tests/acceptance/test_score_api.py`'s existing R1 test, which sends 20
+attempts with **constant** `card_hash`/`bin`/`amount_minor`/`currency` and only a varying
+`event_id` — the realistic shape of card-testing traffic (same card, many attempts). The
+first implementation keyed the Lua script's `SET NX` idempotency guard on `payload_digest`
+alone (M-class fields only, deliberately excluding `event_id`). Since `payload_digest` was
+therefore identical across all 20 calls, every call after the first was misclassified as an
+idempotent replay: windows stopped accumulating, and R1 never fired (`throttle` expected,
+`allow` observed).
+
+### Decision
+Threat Model §3 point 2 already specifies the correct formula and had simply not been
+re-read carefully enough during the first pass: `idem_digest = sha256(merchant_id ||
+event_id || payload_digest)`. `event_id`'s one stated permitted use (Threat Model §2's trust
+boundary table) is exactly "idempotency correlation" — it belongs in the idem key, and
+`payload_digest` alone must not stand in for it. `ScorePathRequest` now carries both
+`idem_digest` (used only to build the `SET NX` key) and `payload_digest` (used only as the
+`eidr` set member, per Threat Model §3 point 4's "distinct payload digests seen per
+event_id").
+
+### Alternatives considered
+Keying solely on `payload_digest` — this was the bug; ruled out once the regression was
+traced. Keying solely on `event_id` — rejected: a resubmitted `event_id` with a mutated
+payload must NOT be treated as idempotent (that is precisely the `event_id_reuse_count`
+signal, Threat Model §3 point 4), so `event_id` alone is also wrong.
+
+### Reasoning
+The specification already had this right; the bug was an implementation deviation caught by
+running the existing locked Day-1 acceptance test against the new code, exactly as the
+Day-3 brief's "fix failures at their source" instruction intends.
+
+### Trade-off
+None — this is a straight correctness fix with no design trade-off.
+
+### Specification impact
+None — Threat Model §3 point 2 already specified this; the fix conforms to it.
+
+### Implementation impact
+`packages/features/store.py` (`ScorePathRequest.idem_digest` field added),
+`packages/features/memory_store.py`, `packages/features/redis_store.py` (idem key
+construction), `packages/features/compute.py` (`idem_digest` computed and passed).
+
+---
+
+## Decision 42: `metric="ip"` extends TRD §6.1's `metric ∈ ev·card·bin·amt` enum
+
+### Context
+TRD §6.8 requires `distinct_ips_per_bin_5m` (R3's inverse-geometry sibling, tracking IPs
+seen per BIN), whose sorted-set member is an IP address. §6.1's stated enum (`ev·card·bin·
+amt`) has no member type for "IP as the tracked value."
+
+### Decision
+`metric="ip"` is added as a fifth value. §6.1's own phrasing ("`metric = bin`, `metric =
+amt` likewise") already treats the list as illustrative extension-by-example, not closed.
+
+### Alternatives considered
+Reusing `metric="card"` with IP addresses as members — rejected: it would collide, in
+principle, with a genuine `metric="card"` window over the same `(space, key)` if one were
+ever added, and mislabels the physical key's contents.
+
+### Reasoning
+Minimal, additive, consistent with how `metric="bin"` and `metric="card"` are already used
+for non-`ev` distinct-value tracking.
+
+### Specification impact
+None — extends an already-illustrative enum.
+
+### Implementation impact
+`packages/features/compute.py` (`distinct_ips_per_bin_5m` window request).
+
+---
+
+## Decision 43: Feature-vector neutral+coverage contract; raw counts kept separate from quantile-suffixed model features
+
+### Context
+TRD §6.8 lists 24 features (v2.1-corrected count). Several depend on inputs that do not
+exist before Day 4 (`store_baseline`), Day 7 (`/v1/outcome`), or ever without a wire change
+(`clock_skew_s` needs a client `ts` field `ScoreRequest` does not carry). Separately, R1-R3's
+rule floors (Decision 17) must read absolute counts, independent of any learned baseline,
+while the model-facing feature list uses quantile-suffixed names (`distinct_cards_per_ip_
+5m_q`) for the same underlying statistic.
+
+### Decision
+Every `compute_features()` call always returns all 24 named keys; un-fed slots emit a
+defined neutral (`0.0`) plus an explicit coverage indicator (`baseline_coverage`,
+`outcome_coverage_ratio` — the latter already one of the 24), each carrying a `# Source:`
+comment naming the blocking dependency. `FeatureVector.distinct_cards_per_ip_5m_raw` carries
+R2's absolute count outside the 24 (its only canonical sibling is quantile-suffixed);
+`attempts_per_ip_60s` and `distinct_cards_per_bin_5m` are both the raw statistic and a
+canonical feature simultaneously, needing no separate field. `DayOneRules.
+evaluate_from_features()` reads exactly these three raw values and is verified (`tests/
+unit/test_rules_feature_parity.py`) to produce byte-identical `RulesEvaluation` output to the
+locked `evaluate()`/`record_and_read()` path.
+
+### Alternatives considered
+Emitting `None`/`NaN` for un-fed slots — rejected: reintroduces exactly the NaN handling the
+Day-3 "no NaN or infinity, ever" gate exists to forbid. Computing only the currently-feedable
+subset — rejected: `feature_snapshot`'s shape would change again on Days 4/5/7, and Day 5's
+time-travel test needs a stable vector shape across the whole training corpus.
+
+### Reasoning
+Keeps the 24-key `FEATURE_NAMES` contract exactly as TRD §6.8 states it while not silently
+breaking R1-R3 (which must stay absolute-count-based per Decision 17) or the locked Day-1
+rule tests.
+
+### Trade-off
+`feature_snapshot` values for un-fed slots are honest placeholders, not predictions —
+correct today, but a reader must know Day 4/7 change these from `0.0` to real numbers.
+
+### Specification impact
+None new — implements TRD §6.8 and Decision 17 together.
+
+### Implementation impact
+`packages/features/compute.py`, `packages/detect/rules.py`
+(`evaluate_from_features`), `services/scorer/scoring.py` (merges the canonical snapshot with
+the rule-level snapshot so `distinct_cards_per_ip_5m` — the raw, un-suffixed key
+`services/dashboard/src/App.jsx` already reads — survives on the wire).
+
+---
+
+## Decision 44: Redis `maxmemory` eviction is distinguished from TTL expiry via a separate polling connection on `INFO stats:evicted_keys`
+
+### Context
+Day-3 Plan §5 test 5 requires eviction and TTL expiry to fail differently: eviction must
+degrade the feature vector to explicitly untrusted, never to silently-wrong counts, while
+ordinary TTL-driven key expiry (memory hygiene, TRD §6.1) must not trip any degrade signal.
+
+### Decision
+`RedisWindowStore` opens a second connection (via the same connection pool's kwargs, not
+reused from the main client) and polls `INFO stats` on a background daemon thread. A rise in
+`evicted_keys` **latches** `trusted=False, degraded_reason="redis_eviction"` permanently for
+that store instance — it does not reset, since past window counts may already be wrong by
+the time eviction is detected. Verified directly against live Redis: a 20,000-write flood
+into a 2MB-capped instance latches `trusted=False`; a 1-second TTL allowed to lapse
+naturally leaves `trusted=True`.
+
+### Alternatives considered
+Checking `evicted_keys` on the main score-path connection before/after each call — rejected:
+would add a second command to the steady-state score path, breaking the one-round-trip
+invariant (TRD §6.3).
+
+### Reasoning
+`evicted_keys` only increments on `maxmemory` eviction, never on TTL expiry — it is the one
+Redis-native signal that actually distinguishes the two failure modes the plan requires
+distinguished.
+
+### Trade-off
+Detection is polled, not synchronous with the write that first got evicted — a small window
+exists where an eviction has happened but not yet been noticed. Accepted: correctness of the
+*eventual* degrade signal matters more than sub-second detection latency here.
+
+### Specification impact
+None — TRD §6.1/§6.3 name TTL as hygiene-only and never specify an eviction-detection
+mechanism; this is the Day-3 implementation choice for a requirement the plan stated but did
+not mechanize.
+
+### Implementation impact
+`packages/features/redis_store.py` (`_poll_eviction`, `_make_health_client`).
+
+---
+
+## Decision 45: CUSUM bucket counter is built raw; `τ_flag`-gated counting is explicitly deferred to Day 6
+
+### Context
+TRD §6.3 step 5 increments the CUSUM bucket counter *inside* the atomic script — i.e.
+before scoring has produced `p_calibrated`. TRD §6.5 defines the statistic the CUSUM
+actually needs, `n_t`, as attempts with `p_calibrated ≥ τ_flag`, which cannot be known at
+the point §6.3 step 5 runs.
+
+### Decision
+Day 3 builds exactly the mechanism §6.3 names: `windows.lua` increments a raw per-bucket
+attempt counter (`HINCRBY` on `tg:{m}:cusum`, rolling over on a new `floor(ingest_ms /
+bucket_ms)`), returned as `cusum_bucket_index`/`cusum_bucket_count`. No `S_t` arithmetic, no
+`τ_flag` gating, is implemented today — this is flagged as an open question for Day 6 rather
+than silently resolved either way.
+
+### Alternatives considered
+Gating the counter on the rules-only `rule_score()` threshold as a Day-3 stand-in for
+`p_calibrated` — rejected: inventing a substitute threshold not named anywhere in the spec
+would let a Day-6 reader mistake it for a real decision rather than a Day-3 placeholder.
+
+### Reasoning
+Building the named mechanism without inventing the unspecified part keeps Day 3's scope to
+what TRD §6.3 actually asks for, and leaves an honest, explicit question for the day that
+owns the answer.
+
+### Trade-off
+The bucket counter's value is not yet the true `n_t` CUSUM will need; Day 6 must decide the
+gating threshold before wiring `S_t`.
+
+### Specification impact
+None — explicitly named as an open question, not resolved.
+
+### Implementation impact
+`packages/features/windows.lua` (step 6), `packages/features/store.py`
+(`cusum_bucket_index`/`cusum_bucket_count` on `ScorePathSnapshot`).
+
+---
+
+## Decision 46: Day-3 exit gate — Redis differential test green; `InMemoryWindowStore` fallback verified but not triggered
+
+### Context
+The pre-committed Day-3 fallback (Impl Plan §Day 3: "if the differential test is not green
+by 20:00, cut Redis — ship `InMemoryWindowStore` behind the same protocol") is a trigger
+condition, not a default.
+
+### Decision
+`tests/acceptance/test_window_differential.py` is parametrised over both backends. Both
+passed: all 821 golden-fixture events, across 8 window statistics, match `tests/oracles/
+pandas_windows.py`'s independent brute-force oracle exactly, on both `RedisWindowStore` and
+`InMemoryWindowStore`. The fallback trigger was **not** hit; `ScorerState.build_default()`
+selects Redis when `TOLLGATE_REDIS_URL` is set and reachable (verified end-to-end: R1 fires
+`throttle` at the 20th attempt through the real Lua script over live Redis) and falls back to
+`InMemoryWindowStore` — logged, not silent — when it is unset or unreachable (both cases
+verified directly).
+
+### Alternatives considered
+N/A — this records an outcome, not a design choice between alternatives.
+
+### Reasoning
+Parametrising the one differential test over both backends means the fallback path is
+*verified*, not merely assumed to work, regardless of which backend is actually live
+tonight.
+
+### Trade-off
+None.
+
+### Specification impact
+None — this is the exit-gate outcome the plan's own trigger condition anticipated.
+
+### Implementation impact
+`services/scorer/deps.py` (`ScorerState._build_window_store()`),
+`tests/acceptance/test_window_differential.py`.
