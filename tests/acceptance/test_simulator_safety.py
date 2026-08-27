@@ -142,6 +142,43 @@ class TestA11TextScan:
         assert BANNED_CALL_RE.search("os.system('curl evil.example')")
 
 
+class TestBinRangeSafety:
+    """
+    Source: Day-4 Plan (rev. 2) Step 3 / F18 -- closes a pre-existing gap:
+    no test previously asserted the "disjoint from every real IIN range"
+    claim for the 999xxx pool. Every BIN the simulator emits (easy/medium/
+    hard attack traffic, baseline traffic, and every negative-control
+    scenario including nri_traffic's FOREIGN_BIN_POOL) must be exactly 6
+    digits, start with FICTIONAL_BIN_PREFIX, and have a leading digit
+    outside the real MII range 1-8.
+    """
+
+    def test_every_emitted_bin_is_a_safe_fictional_bin(self):
+        from packages.simulator.generate import build_negative_stream, build_stream
+        from packages.simulator.identity import FICTIONAL_BIN_PREFIX
+
+        all_bins = set()
+        for tier in ("easy", "medium", "hard"):
+            result = build_stream(seed=42, tier=tier, hours=1)
+            all_bins.update(e.bin for e in result.events)
+        for scenario in ("flash_sale", "corporate_nat", "cgnat", "retry_storm",
+                          "subscription_batch", "nri_traffic", "shared_ip_legit"):
+            result = build_negative_stream(seed=42, scenario=scenario, hours=1)
+            all_bins.update(e.bin for e in result.events)
+
+        assert all_bins, "no BINs collected -- test is vacuous"
+        for bin_value in all_bins:
+            assert len(bin_value) == 6, f"BIN {bin_value!r} is not 6 digits"
+            assert bin_value.isdigit(), f"BIN {bin_value!r} is not numeric"
+            assert bin_value.startswith(FICTIONAL_BIN_PREFIX), (
+                f"BIN {bin_value!r} does not start with {FICTIONAL_BIN_PREFIX!r}"
+            )
+            leading_digit = int(bin_value[0])
+            assert leading_digit not in range(1, 9), (
+                f"BIN {bin_value!r} has leading digit {leading_digit} inside real MII range 1-8"
+            )
+
+
 class TestA11RuntimeSocketMonkeypatch:
     # Source: Day-2 Plan §I A11 -- "a runtime pass with socket.socket
     # monkeypatched to raise". Complements the static scans: proves no

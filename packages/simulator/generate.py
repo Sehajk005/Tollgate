@@ -22,6 +22,8 @@ from pathlib import Path
 
 from packages.simulator.attack import generate_attack_episode
 from packages.simulator.baseline import generate_baseline_events
+from packages.simulator.negative import SCENARIOS as NEGATIVE_SCENARIOS
+from packages.simulator.negative import generate_negative_episode
 from packages.simulator.profile import load_attack_tiers, load_baseline_profile, load_store_profile
 from packages.simulator.stream import Episode, Event, SimulatorOutput, canonical_line, merge_and_number, write_jsonl
 
@@ -102,10 +104,52 @@ def build_stream(
     return SimulatorOutput(events=events, labels=labels, episodes=[episode])
 
 
+def build_negative_stream(
+    *, seed: int, scenario: str, hours: int = DEFAULT_HOURS, epoch_ms: int = DEFAULT_EPOCH_MS,
+    store_profile: "dict | None" = None, baseline_profile: "dict | None" = None,
+) -> SimulatorOutput:
+    """
+    Source: Day-4 Plan (rev. 2) Step 3 -- the negative-control counterpart
+    to `build_stream()`. Single scenario per call, mirroring `--tier`'s one-
+    tier-per-call convention.
+    """
+    if store_profile is None:
+        store_profile = load_store_profile()
+    if baseline_profile is None:
+        baseline_profile = load_baseline_profile()
+
+    items, episode = generate_negative_episode(
+        seed=seed, scenario=scenario, hours=hours,
+        store_profile=store_profile, baseline_profile=baseline_profile,
+    )
+    events, labels = merge_and_number(items, [])
+
+    if epoch_ms:
+        events = [
+            Event(
+                event_id=e.event_id, seq=e.seq, t_ms=e.t_ms + epoch_ms, ip=e.ip,
+                card_hash=e.card_hash, bin=e.bin, amount_minor=e.amount_minor,
+                currency=e.currency, session_id=e.session_id,
+            )
+            for e in events
+        ]
+        episode = Episode(
+            episode_id=episode.episode_id, kind=episode.kind, tier=episode.tier,
+            scenario=episode.scenario, started_at=episode.started_at + epoch_ms,
+            ended_at=episode.ended_at + epoch_ms, attempt_count=episode.attempt_count,
+            distinct_cards=episode.distinct_cards, generator_seed=episode.generator_seed,
+            evasion_params=episode.evasion_params,
+        )
+
+    return SimulatorOutput(events=events, labels=labels, episodes=[episode])
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seed", type=int, required=True)
-    parser.add_argument("--tier", choices=["easy", "hard"], required=True)
+    tier_group = parser.add_mutually_exclusive_group(required=True)
+    tier_group.add_argument("--tier", choices=["easy", "medium", "hard"])
+    tier_group.add_argument("--scenario", choices=list(NEGATIVE_SCENARIOS))
     parser.add_argument("--hours", type=int, default=DEFAULT_HOURS)
     parser.add_argument("--epoch-ms", dest="epoch_ms", type=int, default=DEFAULT_EPOCH_MS)
     parser.add_argument("--out", type=Path, required=True)
@@ -124,7 +168,10 @@ def main() -> None:
             "(Day-2 Plan §F: 'stays implemented behind the same interface... not the default')"
         )
 
-    result = build_stream(seed=args.seed, tier=args.tier, hours=args.hours, epoch_ms=args.epoch_ms)
+    if args.scenario:
+        result = build_negative_stream(seed=args.seed, scenario=args.scenario, hours=args.hours, epoch_ms=args.epoch_ms)
+    else:
+        result = build_stream(seed=args.seed, tier=args.tier, hours=args.hours, epoch_ms=args.epoch_ms)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     write_jsonl(args.out, [canonical_line(e.to_dict()) for e in result.events])
