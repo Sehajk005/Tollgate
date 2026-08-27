@@ -1,0 +1,68 @@
+# Source: Day-4 Plan (rev. 2) Step 1 -- Eval Protocol v2 §1.2-1.4's cost
+# model: theta_T = C_FP(T) / (C_FP(T) + C_FN); C_FN = auth_fee + downstream_
+# exposure; C_FP(T) = aov_minor * margin_pct * P(abandon|T). Leaves follow
+# attack_tiers.yaml's {value, unit, source} shape for consistency, though
+# only attack_tiers.yaml is covered by test_attack_tiers.py::TestA10 --
+# test_cost_thresholds.py is this file's own anti-circularity gate.
+#
+# aov_minor MUST equal config/store_profile.yaml's aov_minor (Day-4 Plan
+# §Step 1) -- test_cost_thresholds.py asserts this cross-file agreement so
+# the two configs cannot silently drift apart.
+
+auth_fee_minor:
+  value: 200
+  unit: minor_currency_units
+  source: "Eval Protocol v2 §1.2 -- C_FN's auth_fee component, gateway pre-auth fee"
+
+downstream_exposure_minor:
+  value: 5000
+  unit: minor_currency_units
+  source: "Eval Protocol v2 §1.2 -- C_FN's downstream_exposure component, expected chargeback/liability cost of one missed card-testing hit"
+
+aov_minor:
+  value: 120000
+  unit: minor_currency_units
+  source: "Eval Protocol v2 §1.3 -- average order value, Rs 1,200; must equal store_profile.yaml"
+
+margin_pct:
+  value: 0.30
+  unit: fraction
+  source: "Eval Protocol v2 §1.3 -- merchant gross margin used to translate an abandoned order into a cost"
+
+abandonment_by_tier:
+  throttle:
+    value: 0.01
+    unit: probability
+    source: "Eval Protocol v2 §1.4 -- P(abandon|throttle), lightest friction tier"
+  challenge:
+    value: 0.05
+    unit: probability
+    source: "Eval Protocol v2 §1.4 -- P(abandon|challenge), the automatic-ceiling tier (TRD Decision table)"
+  step_up:
+    value: 0.15
+    unit: probability
+    source: "Eval Protocol v2 §1.4 -- P(abandon|step_up), manual-confirmation friction tier"
+  block:
+    value: 1.00
+    unit: probability
+    source: "Eval Protocol v2 §1.4 -- P(abandon|block), certain abandonment by construction"
+
+prior_steady_state:
+  value: 0.001
+  unit: probability
+  source: "Eval Protocol v2 §1.2 -- steady-state attack prevalence prior, matches policy_config default"
+
+prior_under_attack:
+  value: 0.9
+  unit: probability
+  source: "Eval Protocol v2 §1.2 -- under-attack prevalence prior, matches policy_config default"
+
+eval_prevalence:
+  value: 0.01
+  unit: probability
+  source: "Eval Protocol v2 §2.1 -- pi_eval, the declared reporting prevalence distinct from raw dataset prevalence"
+
+target_fpr:
+  value: 0.001
+  unit: probability
+  source: "Eval Protocol v2 §2.1 -- recall@FPR cross-tier comparator's target false-positive rate"

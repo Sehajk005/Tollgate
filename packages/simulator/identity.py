@@ -12,6 +12,14 @@ from packages.simulator.rng import SubStream
 FICTIONAL_BIN_PREFIX = "999"
 FICTIONAL_BIN_POOL = [f"{FICTIONAL_BIN_PREFIX}{n:03d}" for n in range(200)]  # 999000..999199
 
+# Source: Day-4 Plan (rev. 2) Step 3 -- the `nri_traffic` negative control
+# needs a BIN pool that is "foreign-issued" by construction, disjoint from
+# FICTIONAL_BIN_POOL (999000-999199) so a length change to that pool never
+# shifts this one's draws or vice versa. Same reasoned prefix (F18): still
+# 6 digits, still starts with FICTIONAL_BIN_PREFIX, still outside every
+# real MII range (1-8).
+FOREIGN_BIN_POOL = [f"{FICTIONAL_BIN_PREFIX}{n:03d}" for n in range(800, 900)]  # 999800..999899
+
 
 def opaque_card_hash(substream: SubStream) -> str:
     """

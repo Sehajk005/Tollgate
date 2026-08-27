@@ -364,6 +364,94 @@ own test), full incident-pipeline wiring is Day 6.
 
 ---
 
+## 12. [Day 4] The evaluation harness -- generation -> dataset -> split -> score -> metric -> report
+
+Source: Day-4 Plan (rev. 2). `eval/` is a new top-level package (repo root, not inside
+`packages/simulator` -- Decisions.md decision 52), invoked as `python -m eval.harness --split
+all --seed 42 [--seeds N] [--out eval/outputs/]`. It never touches the live scoring path
+(`services/scorer/*`, `packages/detect/rules.py`, `packages/features/compute.py` are all
+unmodified) -- it drives the SAME `WindowStore` protocol the online path uses, offline, over
+simulator-generated streams.
+
+```
+eval.harness.main()
+  -- for each seed in [seed, seed+1, ..., seed+seeds-1]:
+       run_all(seed)
+         build_full_dataset(seed)                         eval/harness.py
+           -- 4 sequentially-epoched blocks x {easy, medium, hard}   packages/simulator/generate.py
+              (build_stream, seed+block_i, distinct epoch_ms per block --
+              ONE build_stream() call has exactly one attack episode, so multiple
+              blocks are unioned to spread episodes across a longer timeline;
+              Decisions.md decision 54)
+           -- + one run per negative-control scenario                packages/simulator/negative.py
+              (build_negative_stream, all 7: flash_sale, corporate_nat, cgnat,
+              retry_storm, subscription_batch, nri_traffic, shared_ip_legit)
+           -> build_dataset(runs) -> list[Sample]                     eval/dataset.py
+              (stamps stream_tier from the run label, episode_tier/kind/scenario
+              from the joined Episode, outcome_visible_ms = t_ms + 340ms)
+           -> compute_entity_overlap(samples)                         eval/dataset.py
+              (ip/card_hash only, NOT bin -- test 16 measures why; window =
+              [min(attack t_ms), max(attack t_ms) + 30min], derived from the
+              samples' own is_attack=True timestamps, no second parameter)
+
+         temporal_split(samples, 0.7) -> purge + embargo (30min)      eval/dataset.py
+         attack_shape_holdout(samples) -> train={easy,medium}, test=hard
+         exclude_negative_controls(train side only)                  -- F13 fix
+         negative_control_splits(samples) -> 7 per-scenario Splits    -- deliberately single-class
+
+         for each eval split x each of the 4 B3 sanity scorers:       eval/scorers.py
+             (PerfectScorer, RandomScorer(seed), InvertedScorer, AlwaysPositiveScorer)
+           evaluate(split, scorer, cost_model, provenance) -> Report  eval/harness.py
+             -- recall_at_fpr (Wilson CI + resolvability)             eval/metrics.py
+             -- average_precision / ap_at_prevalence (per-item rank formula,
+                NOT tie-collapsed -- Decisions.md decision 56)
+             -- roc_auc (Mann-Whitney, average-rank ties)
+             -- cost_over_operating_points + roc_convex_hull -> min_cost   eval/cost.py
+             -- per-tier + clean-subset (clean_view) breakdowns
+           Report.__post_init__() -> RunProvenance.validate()          eval/provenance.py
+             (config_hash recomputed and compared; model_version vocabulary;
+             policy_version against a Day-4 placeholder (1,) -- no live
+             merchant DB dependency yet, Decisions.md decision 62)
+
+         B1 (decline-velocity) / B2 (BIN-concentration)                eval/baselines.py
+           -- BOTH drive WindowStore.record_and_read() directly -- zero bespoke
+              windowing code (F3). B2's request is byte-identical to
+              compute.py:203's distinct_cards_per_bin_5m window.
+           -- B1 processes one MERGED chronological timeline (score events at
+              t_ms, decline-visibility events at t_ms+340ms) so a decline is
+              never visible before its own outcome_visible_ms (Decisions.md
+              decision 59)
+
+  eval.report.render(runs) -> eval/outputs/report.md                  eval/report.py
+    Block 1: per-tier recall@FPR + PR-AUC, per sanity scorer (Layer-2 harm
+             metrics named as a Day-6 gap)
+    Block 2: negative controls -- episode/attempt FP counts at theta_challenge
+             =0.257, per scenario, per scorer (nri_traffic marked inert)
+    Block 3: discriminability audit -- deferred to Day 5 (needs feature_snapshot)
+    Block 4: cost over achievable (FPR,TPR) + hull minimum at pi0/pi1 -- no
+             theta-indexed curve, no Rs gap (needs a calibrator, Day 6)
+    Block 5: calibration -- "not yet measured (Day 5)", explicit empty block
+    Block 6: B1/B2 native operating points; B0 marked Day 5 (never recomputed
+             offline -- would credit the live detector with information it
+             never had, Eval Protocol §8)
+```
+
+`eval/load.py::load_truth(conn, merchant_id, runs)` writes `episode_truth` (unconditional,
+idempotent via `INSERT ... ON CONFLICT(episode_id) DO UPDATE`) and `attempt_label` (only for
+events with an existing `auth_attempt` row, i.e. already replayed -- Decision 32; skips
+counted) -- implemented and independently tested
+(`tests/acceptance/test_load_truth.py`), but **not called by `eval.harness.main()`**: Day 4 has
+no live replay/merchant flow to load against yet (Decisions.md decision 62). Wiring it into a
+real replay is Day 5's job.
+
+**Deferred past Day 4** (see §10 below for the full list): the discriminability audit RUN
+(statistic ships, Day 5), calibration (Day 5), B0 recomputed offline (never -- by design),
+Layer-2 harm metrics / incident-based reporting (Day 6), a theta-indexed cost curve (Day 6),
+`nri_traffic`'s actual discriminating power (Day 5, tracked by a tripwire test), `evasive` tier
+(Day 7).
+
+---
+
 ## 10. What does NOT exist yet (explicitly deferred)
 
 - No `/v1/outcome` route (Day 7); `decline_rate_per_ip_5m`, `invalid_cvv_share_ip_5m`,
@@ -380,12 +468,26 @@ own test), full incident-pipeline wiring is Day 6.
   (Day 8); the template narrator (§11 above) is not yet called from `score_attempt()`.
 - No BIN metadata join -- `tier_ladder` is hardcoded `"domestic"`, `bin_is_foreign_issued`
   and `foreign_bin_share_5m` stay at `0.0`.
-- No `medium`/`evasive` attack tiers (`config/attack_tiers.yaml` declares
-  them `pending: "Day 4"`/`"Day 7"`); no negative-control selector, no
-  flood/kill-scorer DC toggles (Day 4 / Day 7).
+- [Day 4] `medium` attack tier and all seven negative-control scenarios now exist
+  (`config/attack_tiers.yaml`, `packages/simulator/negative.py`); only `evasive` stays
+  `pending: "Day 7"`. No flood/kill-scorer DC toggles (Day 7).
 - No stream authentication -- `/v1/stream` publishes `rules_fired` and
   `feature_snapshot` unauthenticated; accepted for the loopback-bound demo
   (Threat Model v2 addendum, decisions.md decision 34), hardened Day 7.
 - `tests/fixtures/handmade_40.jsonl` (the independent human-authored oracle) has not been
   supplied yet; `tests/acceptance/test_handmade_40.py` xfails with a named reason until it is
   (Decisions.md decision 14 -- must not be generated by the implementation agent).
+- [Day 4] No model, no calibrator, no training corpus -- Day 4 evaluates only the four B3
+  sanity scorers (`eval/scorers.py`) plus the two window-driven baselines B1/B2
+  (`eval/baselines.py`). B0 (the live rules layer) is never recomputed offline; it is wired
+  into the harness on Day 5 once the replay corpus exists.
+- [Day 4] The discriminability audit's statistic (`eval/audit.py::univariate_auc`) ships, but
+  running it over real features does not -- it needs `feature_snapshot` rows from Day 5's
+  replay (TRD §6.4 bans recomputing features offline).
+- [Day 4] No theta-indexed cost curve, no "cost-optimal threshold," no currency-amount gap --
+  those presuppose a calibrated posterior (Day 5's calibrator, Day 6's cost reporting).
+- [Day 4] `nri_traffic`'s control is inert: `bin_is_foreign_issued` is 0.0 for every attack-tier
+  event today (no BIN metadata join, per the bullet above) -- `test_nri_control_tripwire.py`
+  fails the moment that changes while attack-side foreign share stays zero.
+- [Day 4] `eval/load.py::load_truth()` exists and is tested in isolation, but is not called by
+  `eval.harness.main()` -- there is no live replay/merchant DB flow for it to load against yet.

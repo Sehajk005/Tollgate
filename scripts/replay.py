@@ -48,7 +48,7 @@ async def _run_and_collect(state: ScorerState, request: ReplayRequest) -> list:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--tier", choices=["easy", "hard"], required=True)
+    parser.add_argument("--tier", choices=["easy", "medium", "hard"], required=True)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--speed", type=int, default=0)
     parser.add_argument("--hours", type=int, default=3)

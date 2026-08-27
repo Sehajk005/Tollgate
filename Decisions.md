@@ -1913,3 +1913,661 @@ None — this is the exit-gate outcome the plan's own trigger condition anticipa
 ### Implementation impact
 `services/scorer/deps.py` (`ScorerState._build_window_store()`),
 `tests/acceptance/test_window_differential.py`.
+
+---
+
+## Decision 47: Cost model shape, ladder derivation, and ROC-convex-hull minimum cost (no theta-grid)
+
+### Context
+Day-4 Plan Step 1 requires `theta_T = C_FP(T)/(C_FP(T)+C_FN)` reproducing the ladder
+`{0.065, 0.257, 0.509, 0.874}` for `{throttle, challenge, step_up, block}`, and an expected-cost
+minimum over achievable operating points rather than a uniform theta grid (rev. 1's F9 bug: a
+grid's minimum is a function of `n_points`, not of the classifier).
+
+### Decision
+`config/cost_model.yaml` carries `auth_fee_minor=200`, `downstream_exposure_minor=5000`,
+`aov_minor=120000` (equal to `store_profile.yaml`, asserted by test), `margin_pct=0.30`, and
+`abandonment_by_tier={throttle:0.01, challenge:0.05, step_up:0.15, block:1.00}`, in the same
+`{value, unit, source}` leaf shape as `attack_tiers.yaml`. `eval/cost.py::CostModel` derives
+`c_fn_minor()`, `c_fp_minor(tier)`, and `tier_ladder()` (unrounded) purely from these leaves —
+never hardcoded — and `roc_convex_hull()` (a standard monotone-chain upper envelope, always
+including the trivial `(0,0)`/`(1,1)` endpoints) feeds `min_cost_operating_point()`, which
+minimises `expected_cost_per_10k` over hull vertices only. `TIER_ORDER =
+("throttle","challenge","step_up","block")` matches `packages/contracts/decision.py`'s
+`Decision` enum order; `allow`/`monitor` carry no configured abandonment cost and are outside
+the ladder.
+
+### Alternatives considered
+A uniform theta grid (rev. 1's approach) — rejected: its minimum-cost estimate depends on grid
+resolution, not on the achievable frontier, and would make the headline currency gap a function
+of an arbitrary parameter.
+
+### Reasoning
+Expected cost is piecewise-linear over achievable `(FPR, TPR)` points, so its minimum
+provably sits at a convex-hull vertex; minimising over vertices is exact.
+
+### Trade-off
+None — the hull approach is strictly more correct at no extra conceptual cost.
+
+### Specification impact
+None — implements Eval Protocol §1.2-1.4 as specified.
+
+### Implementation impact
+`config/cost_model.yaml`, `eval/cost.py`, `tests/acceptance/test_cost_thresholds.py`,
+`tests/acceptance/test_cost_curve_endpoints.py`.
+
+---
+
+## Decision 48: `medium` attack-tier parameterization and the one authorized acceptance-test edit
+
+### Context
+Day-4 Plan Step 2 requires medium's leaves to be real (not `pending`), tuned so R1 stays silent
+while R2/R3 fire with a margin the plan requires be verified from config arithmetic on every
+seed, not fitted to one run (F20).
+
+### Decision
+`attempts_per_hour=2400` (band 1800-2999), `ip_pool_size=6`, `bin_pool_size=4`,
+`episode_duration_s=720`, `distinct_cards=400` (matching easy/hard). Hand-computed margins:
+R1 `attempts_per_ip_60s` expected 6.7 vs threshold 20 (3.0x clear, silent); R2
+`distinct_cards_per_ip_5m` expected 33.3 vs threshold 15 (2.2x over, fires); R3
+`distinct_cards_per_bin_5m` expected 50 vs threshold 20 (2.5x over, fires) — yielding the
+monotone B0 ladder easy 3/3 -> medium 2/3 -> hard 0/3, verified across 5 seeds
+(`test_attack_tiers.py::TestMediumTierRealAndLadderMonotone`).
+`test_pending_tiers_are_exempt_but_present` was amended from
+`tiers["medium"].get("pending") == "Day 4"` to `"pending" not in tiers["medium"]` — the one
+acceptance-test edit the Day-4 plan pre-authorizes.
+
+### Alternatives considered
+`ip_pool_size=8` (rev. 1's original, 1.67x margin) — rejected: too thin a margin on a single
+seed is how a config gets silently tuned to that seed rather than to the arithmetic.
+
+### Reasoning
+Margins computed from config arithmetic (not from an observed run) make the medium tier's
+firing pattern a property of the declared parameters, verifiable independent of any specific
+generated stream.
+
+### Trade-off
+None.
+
+### Specification impact
+Fills in Impl Plan v2.1 §Day 2's declared-but-`pending` medium placeholder, as that section
+itself anticipated for Day 4.
+
+### Implementation impact
+`config/attack_tiers.yaml`, `packages/simulator/generate.py` (`--tier` choices),
+`scripts/replay.py` (`--tier` choices), `tests/acceptance/test_attack_tiers.py`.
+
+---
+
+## Decision 49: `FOREIGN_BIN_POOL` as a disjoint 999-subrange; the pre-existing BIN safety gap is closed
+
+### Context
+`nri_traffic` needs BINs that are "foreign-issued" by construction, and Day-4 Plan Step 3 (F18)
+notes that no test previously asserted the "999xxx is disjoint from every real IIN range" claim
+for the *existing* `FICTIONAL_BIN_POOL` either.
+
+### Decision
+`packages/simulator/identity.py` gains `FOREIGN_BIN_POOL = 999800..999899` (100 values),
+additive, leaving `FICTIONAL_BIN_POOL` (999000..999199, 200 values) byte-identical so
+`golden.jsonl`'s SHA is untouched. `test_simulator_safety.py::TestBinRangeSafety` closes the
+pre-existing gap for *both* pools at once: every BIN emitted by any tier or any of the seven
+negative-control scenarios is asserted to be exactly 6 digits, start with `FICTIONAL_BIN_PREFIX`
+("999"), and have a leading digit outside the real MII range 1-8.
+
+### Alternatives considered
+A second, differently-prefixed pool (e.g. `998xxx`) — rejected: would have inherited the same
+unverified "disjoint from real BINs" claim rev. 1 never tested for `999xxx` either; closing the
+gap once, for the existing prefix, is strictly more valuable.
+
+### Reasoning
+Additive-only change preserves every Day 1-3 determinism/golden-fixture guarantee while
+finally testing the safety claim the whole BIN scheme depends on.
+
+### Trade-off
+None.
+
+### Specification impact
+None — closes a testing gap in an existing safety claim (PRD v2 §9 / Schema v2 §3.2).
+
+### Implementation impact
+`packages/simulator/identity.py`, `packages/simulator/negative.py`,
+`tests/acceptance/test_simulator_safety.py`.
+
+---
+
+## Decision 50: Seven negative-control scenarios — canonical naming, schema `CHECK`, and `shared_ip_legit`'s self-contained construction
+
+### Context
+Backend Schema v2 §3.2 and the Eval Protocol/TRD disagree on the scenario vocabulary (six vs
+seven names); `episode_truth.scenario` had no `CHECK` and no test enforcing agreement (F17).
+`shared_ip_legit` must be the sole source of `entity_overlap=True` among the seven controls,
+which requires a legitimate customer's traffic to genuinely overlap an attack's entity keys.
+
+### Decision
+Adopted Backend Schema's seven spellings (`flash_sale, corporate_nat, cgnat, retry_storm,
+subscription_batch, nri_traffic, shared_ip_legit`), added a `CHECK` constraint on
+`episode_truth.scenario` enumerating them (`NULL` allowed for attack-tier episodes), and a test
+(`test_negative_scenarios.py`) asserting `SCENARIOS == ` the schema's own `CHECK` list, not a
+duplicated literal. `shared_ip_legit` is built **self-contained** inside
+`packages/simulator/negative.py`: it generates its own small attack-shaped burst
+(`is_attack=True`) directly, rather than calling `generate_attack_episode()`, so every item in
+the scenario — the fraudulent burst and the one legitimate customer sharing its IP — shares
+**one** `episode_id` under the **one** `Episode` object the module's per-scenario contract
+returns. `eval/dataset.py::compute_entity_overlap` derives each attack episode's contamination
+window purely from its own `is_attack=True` samples' `t_ms` values (min/max), not from a second
+Episode-list parameter — this only works because `shared_ip_legit`'s fraud and legitimate items
+share one `episode_id`; a design with two separate Episodes (one real "attack", one wrapper
+"negative_control") would have required a second parameter and a cross-episode-id lookup.
+
+### Alternatives considered
+Reusing `generate_attack_episode()` for `shared_ip_legit`'s embedded burst, producing two
+separate `Episode` records (an "attack" one plus a "negative_control" wrapper) — rejected:
+would require `compute_entity_overlap` to take an explicit `episodes` parameter and match
+across two different `episode_id`s, and complicates `episode_truth`'s foreign-key story for no
+behavioural gain the single-episode design doesn't already deliver.
+
+### Reasoning
+A single shared `episode_id` keeps `compute_entity_overlap`'s signature exactly
+`compute_entity_overlap(samples)` (one argument, self-contained, testable in isolation) while
+still producing a real, non-degenerate `entity_overlap=True` case.
+
+### Trade-off
+`shared_ip_legit`'s `episode_truth.kind='negative_control'` row technically contains some
+genuinely fraudulent (`is_attack=True`) sub-traffic — the container's `kind` describes the
+*scenario's purpose* (testing entity-key contamination of legitimate traffic), not a claim that
+every item inside it is legitimate; `attempt_label.is_attack` remains the source of truth per
+item.
+
+### Specification impact
+Resolves the six-vs-seven scenario-vocabulary discrepancy in favour of Backend Schema v2 §3.2's
+list (Day-4 Plan §2 discrepancy 2).
+
+### Implementation impact
+`packages/simulator/negative.py`, `schema.sql` (`episode_truth.scenario` `CHECK`),
+`eval/dataset.py` (`compute_entity_overlap`), `tests/acceptance/test_negative_scenarios.py`.
+
+---
+
+## Decision 51: `nri_traffic` is inert on Day 4, with a tripwire test
+
+### Context
+`nri_traffic` exists to control for `bin_is_foreign_issued`, but `attack.py` (locked, must not
+change on Day 4) never draws from a foreign-BIN pool and `compute_features()` always emits
+`bin_is_foreign_issued=0.0` (Day-3 Plan §2 D5: unknown BIN treated as domestic). The control
+therefore has nothing to control for yet (F11).
+
+### Decision
+Report block 2 marks `nri_traffic` `inert — becomes live on Day 5`.
+`tests/acceptance/test_nri_control_tripwire.py` asserts `bin_is_foreign_issued` stays 0.0 across
+every attack-tier event today, and is designed to **fail** the moment a future change makes the
+feature go live while attack-side foreign share is still zero — so the deferral cannot be
+silently forgotten once `bin_metadata`/`attack.py`'s `foreign_bin_share` wiring lands.
+
+### Alternatives considered
+Silently shipping `nri_traffic` without the inert marker — rejected: would present a
+non-functional control as if it were measuring something, the exact failure mode Eval Protocol
+§8 exists to forbid.
+
+### Reasoning
+Naming the gap explicitly, with a test that force-fails on drift, is cheaper than either hiding
+it or building the feature Day 4 has no mandate to build.
+
+### Trade-off
+`nri_traffic`'s block-2 numbers are reported as normal FP-rate figures like the other six
+scenarios, but carry no discriminative meaning yet — a reader must read the inert marker to
+know that.
+
+### Specification impact
+None — states a pre-existing dependency (Threat Model v2 §7b's `foreign_bin_share`, deferred to
+Day 3+ per its own docstring) rather than changing it.
+
+### Implementation impact
+`eval/report.py` (block 2), `tests/acceptance/test_nri_control_tripwire.py`.
+
+---
+
+## Decision 52: `eval/` is a top-level package at the repo root
+
+### Context
+TRD §3 and Schema §9 step 7 place `eval/` at repo root (`python -m eval.harness`); Decision 28
+already settled `packages/simulator/negative.py`'s placement but left `eval/`'s open (Day-4 Plan
+§2 discrepancy 1).
+
+### Decision
+`eval/` is a new top-level package (`eval/__init__.py` present), added to
+`pyproject.toml`'s `[tool.setuptools.packages.find] include` alongside `packages*`,
+`services*`, `scripts*`.
+
+### Alternatives considered
+Nesting eval logic inside `packages/` — rejected: contradicts TRD §3's explicit placement and
+the `python -m eval.harness` invocation Schema §9 names.
+
+### Reasoning
+Matches the spec's stated module path exactly; no other code needs to change to accommodate it.
+
+### Trade-off
+None.
+
+### Specification impact
+None — implements TRD §3 as written.
+
+### Implementation impact
+`eval/__init__.py`, `pyproject.toml`.
+
+---
+
+## Decision 53: `stream_tier` vs `episode_tier`; entity-overlap contamination windows derived from samples alone
+
+### Context
+Rev. 1 had one conflated tier field on its sample record: every negative control (which has no
+episode) fell into a holdout's train side, and the "hard" test split was single-class at
+`pi=1.0` (F1).
+
+### Decision
+`eval/dataset.py::Sample` carries two separate fields: `stream_tier` (the tier of the STREAM RUN
+a sample came from — `easy|medium|hard|None`, `None` for negative-control/scenario runs) and
+`episode_tier` (the tier of the EPISODE it belongs to — `None` for every legitimate, baseline,
+or negative-control sample). `attack_shape_holdout()` splits on `stream_tier`;
+`compute_entity_overlap()` reads `is_attack` per sample, independent of either tier field.
+`compute_entity_overlap(samples)` derives each attack episode's contamination window purely from
+its own `is_attack=True` samples' `t_ms` values (grouped by `episode_id`), not from a second
+`episodes` parameter — self-contained, and tight to within one inter-arrival gap of the episode's
+true `started_at`/`ended_at` (verified indirectly: `shared_ip_legit`'s planted case correctly
+flags `entity_overlap=True`).
+
+### Alternatives considered
+Passing the full `Episode` list into `compute_entity_overlap()` for exact `started_at`/`ended_at`
+bounds — rejected: adds a parameter for a precision gain (at most one inter-arrival-gap's worth
+of timing slack) that no test or report block needs, and would have made `shared_ip_legit`'s
+embedded-attack design (Decision 50) require a second Episode object instead of one.
+
+### Reasoning
+Two explicit tier fields make F1 structurally impossible to reintroduce: a negative control's
+`stream_tier` is always `None`, so it can never be mistaken for an attack-tier holdout member.
+
+### Trade-off
+The contamination window's lower/upper bounds are approximate (derived from observed
+attack-sample timestamps, not the episode's declared `started_at`/`ended_at`) — acceptable given
+the approximation is tight and the alternative (an extra parameter) buys nothing testable today.
+
+### Specification impact
+None — implements Eval Protocol §6.2/§7 as specified, fixing rev. 1's bug.
+
+### Implementation impact
+`eval/dataset.py` (`Sample`, `compute_entity_overlap`, `attack_shape_holdout`).
+
+---
+
+## Decision 54: Temporal split cuts by TIME fraction, not sample count; multi-block staggered generation
+
+### Context
+A single `build_stream()` run has exactly one attack episode at a fixed point in its window. A
+sample-COUNT-based cut (`sorted_samples[int(n*fraction)]`) can land inside a dense attack burst
+(hundreds of events in minutes, versus a sparse hourly baseline), pushing the boundary to an
+unrepresentative point in wall-clock time and — discovered while writing `test_splits.py` —
+producing a single-class train split even at `train_fraction=0.7`.
+
+### Decision
+`temporal_split()` computes its boundary as `t_min + (t_max - t_min) * train_fraction` (a TIME
+fraction), not a sample-count index. Test and harness (`eval/harness.py::build_full_dataset`)
+dataset construction unions **multiple sequentially-epoched blocks per attack tier**
+(`N_BLOCKS_PER_TIER=4`, each its own seed derived from the base seed) rather than one run per
+tier, so several attack episodes spread across a longer combined timeline — a single-episode
+run cannot, by construction, land attack representation on both sides of any boundary.
+
+### Alternatives considered
+Keeping the sample-count cut and tuning `train_fraction` per call site to dodge the burst —
+rejected: fragile, seed- and volume-dependent, and does not fix the underlying issue (a burst
+still displaces the boundary from its intended wall-clock meaning).
+
+### Reasoning
+A temporal split's whole point is a wall-clock boundary; cutting by sample count conflates
+"time passed" with "events observed," which a bursty generator (deliberately so, for attack
+traffic) breaks.
+
+### Trade-off
+The harness's default dataset generation costs more (4x the stream-generation work per attack
+tier) than a single run per tier would.
+
+### Specification impact
+None — implements Eval Protocol §7's temporal split as specified; fixes an implementation bug
+this plan's own construction would otherwise have reintroduced.
+
+### Implementation impact
+`eval/dataset.py::temporal_split`, `eval/harness.py::build_full_dataset`,
+`tests/acceptance/test_splits.py`.
+
+---
+
+## Decision 55: Train-side-only negative-control exclusion; `negative_control_splits()` is deliberately single-class
+
+### Context
+Rev. 1 applied negative-control exclusion "inside every constructor," filtering both train AND
+eval splits and producing a permanent, perfect-looking 0-FP report (F13).
+
+### Decision
+`exclude_negative_controls(split)` is applied by the CALLER to the train side only
+(`eval/harness.py::run_all`); the eval-side splits (`temporal_test`, `holdout_test`,
+`negative_control_splits()`'s seven per-scenario splits) are never filtered. `Split.validate()`
+(which raises `SingleClassSplitError` on `prevalence in {0,1}`) is called only by the two
+PARTITIONING constructors (`temporal_split`, `attack_shape_holdout`) that are meant to produce
+two-class halves — `negative_control_splits()` deliberately returns single-class (100%
+legitimate) splits by design (that IS the point of a negative control, test 10) and never calls
+`.validate()`.
+
+### Alternatives considered
+Calling `.validate()` from every function that returns a `Split`, uniformly — rejected: would
+make every legitimate negative-control split raise `SingleClassSplitError`, since they are
+single-class by construction; "every constructor calls it" (Day-4 Plan Step 4) is read here as
+"every train/test PARTITIONING constructor," not literally every `Split`-returning function.
+
+### Reasoning
+The train-only exclusion point is exactly where F13's bug lived; keeping it a caller-level
+decision (not baked into `Split` construction) makes the isolation explicit and testable
+(`test_negative_controls_isolated.py`) independent of evaluation (`test_negative_controls_
+evaluated.py`).
+
+### Trade-off
+None.
+
+### Specification impact
+None — implements Eval Protocol §7 as specified, fixing rev. 1's F13 bug.
+
+### Implementation impact
+`eval/dataset.py` (`exclude_negative_controls`, `negative_control_splits`, `Split.validate`),
+`eval/harness.py::run_all`.
+
+---
+
+## Decision 56: AP uses the standard per-item rank formula, not a tie-collapsed group formula; `recall_at_fpr` is `None` for a <=2-point ROC
+
+### Context
+The stated "tie convention... applied everywhere" (equal scores collapse into one operating
+point) is correct for ROC-based functions (`roc_points`, `recall_at_fpr`, `operating_point`),
+where a decision threshold genuinely cannot separate two identically-scored items. Applying the
+same group-collapsing to `average_precision`, though, was found (while making
+`test_harness_sanity.py` pass) to give `AlwaysPositiveScorer`'s AP == pi correctly but
+`InvertedScorer`'s AP == pi too — not the plan's own closed form
+`(1/P)*sum_{k=1..P} k/(N-P+k)` (approx. 0.0053 vs pi=0.01 for the test's N/P), because
+tie-collapsing a same-label positives group into one PR step discards the closed form's
+per-positive incremental credit.
+
+### Decision
+`average_precision`/`ap_at_prevalence` iterate the ranked list ONE ITEM AT A TIME (Python's
+stable `sorted(..., reverse=True)`, which preserves each tied item's original input order),
+accumulating a term only when the current item is a true positive. Same-label ties never need
+resolving this way (the accumulation only depends on which items ARE positive, not their
+internal order), which is what still makes `AlwaysPositiveScorer`'s AP an exact, deterministic
+`pi` — provided its positives are evenly spread through the input array (verified in
+`test_harness_sanity.py::_make_samples`'s "every n/n_pos-th position" construction; a
+front-loaded arrangement would NOT give exactly `pi` under a fully-tied score list). Separately,
+`recall_at_fpr` returns `value=None` ("unreachable") when the full ROC curve has only the two
+trivial endpoints `(0,0)`/`(1,1)` — a scorer with zero discriminating power (`AlwaysPositiveScorer`)
+— but a real (possibly 0.0) value when a third point exists, even a badly-discriminating one
+(`InvertedScorer`, whose extra point at `(1.0, 0.0)` proves it DOES have a well-defined, if
+useless, decision function).
+
+### Alternatives considered
+Tie-collapsed group AP (my first implementation) — rejected: contradicts the Inverted-scorer
+closed form the plan states as the test-4 gate. Per-item AP with an ARBITRARY (non-evenly-
+spaced) input order for the AlwaysPositive fixture — rejected: makes AP == pi only in
+expectation over random orderings, not the deterministic identity test 5 requires; the fixture's
+input order therefore had to be a deliberate design choice, not an afterthought.
+
+### Reasoning
+The two conventions (group-collapsed ROC thresholds, per-item ranked AP) are both standard and
+individually correct for what they compute; conflating them into one blanket rule was the actual
+rev.-1-style bug this decision fixes before it shipped.
+
+### Trade-off
+`average_precision`'s exact value on a scorer with many exactly-tied scores is technically
+sensitive to the STABLE input order among same-class ties in principle, though never in a way
+that changes the computed value (same-label tie order is provably irrelevant to the per-item
+sum) — the sensitivity that DOES matter is cross-class tie order, which the fixture design in
+Decision above controls for explicitly.
+
+### Specification impact
+Clarifies "tie convention... applied everywhere" (Day-4 Plan Step 5) as applying to ROC/operating
+-point functions; AP's rank-based formula is the one that gives the four sanity scorers their
+stated exact closed forms.
+
+### Implementation impact
+`eval/metrics.py` (`average_precision`, `ap_at_prevalence`, `recall_at_fpr`),
+`tests/acceptance/test_harness_sanity.py`.
+
+---
+
+## Decision 57: Cost reported over achievable operating points + convex hull; no theta-indexed curve until a calibrator exists
+
+### Context
+theta_T is Bayes-optimal only for a calibrated posterior, and Day 4 has no calibrator (F8, F9).
+
+### Decision
+`eval/report.py` block 4 renders cost only as hull-minimum `(FPR, TPR)` points and their
+`expected_cost_per_10k` at `pi0`/`pi1`, tier=`challenge`. No theta-indexed curve, no
+"cost-optimal threshold," no currency gap number — those presuppose a calibrated posterior;
+block 5 (calibration) is rendered as an explicit, empty `not yet measured (Day 5)` block instead
+of inventing one.
+
+### Alternatives considered
+Reporting a theta-indexed curve using raw (uncalibrated) scores anyway — rejected: would print a
+Rs figure the report itself could not justify, the exact violation Eval Protocol §0 (via §8)
+exists to forbid.
+
+### Reasoning
+An honest empty block for what genuinely cannot be measured yet is more useful than a plausible-
+looking number computed from an assumption (calibration) that does not hold.
+
+### Trade-off
+Block 4 cannot show a single "the model saves Rs X" headline on Day 4 — deferred to Day 6.
+
+### Specification impact
+None — Eval Protocol §1.4's theta_T formula is still implemented (`eval/cost.py::tier_ladder`);
+only its APPLICATION to an uncalibrated score is deferred.
+
+### Implementation impact
+`eval/report.py` (block 4), `eval/cost.py`.
+
+---
+
+## Decision 58: `config_hash` / `build_hash` construction
+
+### Context
+Eval Protocol §9 requires every reported number traceable to its exact config + code state;
+rev. 1's provenance guard passed on any non-empty string (F16).
+
+### Decision
+`config_hash()` = `sha256("tollgate-config-v1\x00" + for each sorted rel_path: rel_path +
+"\x00" + canonical_json(parsed_yaml) + "\x00")` over `cost_model.yaml`, `rules.yaml`,
+`attack_tiers.yaml`, `store_profile.yaml` — path-prefixed and `\x00`-framed so moving a leaf
+between two files changes the hash, and computed over the PARSED structure (Decision 30's
+canonical-JSON convention) so comments/whitespace never churn it. `build_hash()` is a SEPARATE
+value covering `git rev-parse HEAD` + dirty flag, the baseline profile's SHA, and the golden
+fixture's SHA — two runs on different code no longer share an identical (config_hash,
+build_hash) pair even when the configs themselves are unchanged.
+
+### Alternatives considered
+A single combined hash over configs + git state — rejected: would make "did the config change"
+and "did the code change" indistinguishable from the hash alone, when the report needs to
+answer both questions separately.
+
+### Reasoning
+Splitting the two hashes lets a reader see at a glance whether a report diff came from a config
+edit, a code change, or both.
+
+### Trade-off
+None.
+
+### Specification impact
+None — implements Eval Protocol §9 as specified.
+
+### Implementation impact
+`eval/provenance.py`, `tests/acceptance/test_config_hash.py`,
+`tests/acceptance/test_report_provenance.py`.
+
+---
+
+## Decision 59: B1 bitemporal decline-velocity via a merged-chronological single pass and a constant-probe peek
+
+### Context
+`WindowStore.record_and_read()` always inserts AND reads in one call — there is no pure
+"peek" operation. B1 needs to read "declines visible as of event N's OWN scoring time," which
+must NOT include N's own (not-yet-known) outcome, and must correctly exclude a nearby prior
+event's decline if that decline's `outcome_visible_ms` (`t_ms + 340ms`) falls chronologically
+AFTER N's scoring time even though the prior event itself happened earlier (F4).
+
+### Decision
+`eval/baselines.py::b1_decline_velocity_scores` builds one MERGED chronological timeline per
+call: a "score" event at each sample's `t_ms`, and (for declined samples only) an "insert" event
+at `outcome_visible_ms` — processed together in `(timestamp, tie_rank)` order, `tie_rank`
+breaking an exact timestamp tie in favour of "score first" (a decline landing at the exact same
+millisecond as a query is treated as not-yet-visible, the conservative reading). Reads use a
+CONSTANT per-IP probe member (`__b1_probe__:{ip}`, not a per-event unique key), so repeated
+reads for the same IP only ever update one phantom dict entry (`record_and_read`'s
+`window[member] = ingest_ms` overwrite semantics) rather than accumulating garbage; the
+resulting `+1` in the returned count is a known constant, subtracted out (`count - 1`).
+
+### Alternatives considered
+Adding a genuine read-only `peek()` method to the `WindowStore` protocol — rejected: broadens
+the online-path protocol for an offline-only need, when the existing `record_and_read` API,
+used carefully, already supports a correct construction (F3's "no bespoke windowing code"
+requirement is about not building a SECOND counting implementation, not about the API surface
+being immutable).
+Per-event-unique probe keys — rejected: verified to accumulate un-decaying phantom entries
+across repeated queries for the same IP within one window, corrupting later reads.
+
+### Reasoning
+The merged-timeline ordering is what makes "zero declines from events in the trailing 340ms are
+ever visible" a structural guarantee rather than a coincidence of iteration order — verified by
+`test_baselines_single_source.py::TestB1BitemporalHonesty` re-deriving the same count by an
+independent manual recount.
+
+### Trade-off
+B1 is not a pure per-`Sample` `Scorer` callable (unlike B2 and the four sanity scorers) — it
+needs the whole split's samples up front to build the merged timeline, so it is a distinct
+function (`b1_decline_velocity`) rather than conforming to the `Scorer` protocol.
+
+### Specification impact
+None — implements Eval Protocol's B1 baseline as specified (Day-4 Plan Step 6), using only the
+existing `WindowStore.record_and_read` API (F3).
+
+### Implementation impact
+`eval/baselines.py`, `tests/acceptance/test_baselines_single_source.py`.
+
+---
+
+## Decision 60: Discriminability audit ships as a statistic only; Layer-2 harm metrics deferred to Day 6
+
+### Context
+The discriminability audit needs `feature_snapshot` rows, which require Day 5's replay;
+`Sample` deliberately carries raw event fields, not a feature vector (recomputing features
+offline is banned by TRD §6.4) (F12). Eval Protocol §2.2's `cards_exposed_before_alert`,
+`attempts_before_alert`, `time_to_detect_s` all presuppose an alert, which is Day 6's incident
+detector.
+
+### Decision
+`eval/audit.py::univariate_auc` (reusing `eval.metrics.roc_auc`'s Mann-Whitney statistic — one
+implementation, not a second copy) ships today with a planted-perfect-discriminator test
+(`test_audit_statistic.py`); running the audit itself is deferred to Day 5, rendered in report
+block 3 as an explicit `deferred to Day 5` line, not silently omitted. Report block 1 renders
+the three Layer-2 harm metrics as a named gap: `deferred to Day 6 -- requires the incident
+detector; the harm unit is not yet measured.`
+
+### Alternatives considered
+Recomputing features offline from `Sample`'s raw fields to run the audit early — rejected:
+explicitly banned by TRD §6.4 (a second feature-computation path would let the audit and the
+live path silently diverge).
+
+### Reasoning
+Both gaps are genuine DEPENDENCY blocks, not scope choices — naming them explicitly (with a
+dependency reason, not just "not done yet") is the honest version of "not implemented."
+
+### Trade-off
+None.
+
+### Specification impact
+None — restates existing dependency chains (TRD §6.4, Eval Protocol §2.2) rather than changing
+them.
+
+### Implementation impact
+`eval/audit.py`, `eval/report.py` (blocks 1 and 3), `tests/acceptance/test_audit_statistic.py`.
+
+---
+
+## Decision 61: Multi-seed cut from 5 to 1 for the CLI harness report
+
+### Context
+Day-4 Plan §7's budget ran ~70 minutes over a 9-hour gate subtotal even before Steps 10-11; §9's
+cut ladder explicitly authorizes "Multi-seed 5 -> 1 (-20m), with the limitation stated in the
+report and in README. Weakens tests 3 and 20 to characterization" as the second-highest-value
+cut after `eval/load.py`.
+
+### Decision
+`python -m eval.harness` defaults to `--seeds 1` (accepts `--seeds N` for a real multi-seed
+run). Tests 3 (`test_harness_sanity.py::TestRandomScorer`) and 20
+(`test_attack_tiers.py::TestMediumTierRealAndLadderMonotone`) still independently exercise their
+scorers/tiers across 5 seeds by calling the scoring/generation functions directly — they do not
+go through the harness's own report-generation loop — so their acceptance-gate guarantee is not
+weakened, only the CLI's OWN default report is single-seed. The report and README both state
+this limitation explicitly.
+
+### Alternatives considered
+Cutting the negative-control suite, the four-scorer gate, or the purge/embargo instead — all
+explicitly on the plan's "never cut" list; multi-seed is the plan's own next-highest-value cut.
+
+### Reasoning
+Tests 3/20 already deliver the "verified across 5 seeds" guarantee the plan cares about, at the
+function level, independent of whether the CLI's aggregate report also re-runs 5x.
+
+### Trade-off
+The DEFAULT `python -m eval.harness` invocation (`--seeds 1`) still reports single-seed point
+estimates for its headline numbers. Passing `--seeds N>1` does run `N` independent dataset
+generations and block 1 (per-tier recall@FPR / AP, the actual headline metrics) reports
+min/median/max across them — but blocks 2, 4, and 6 render only the first run's data even when
+`--seeds N>1` is passed; extending every block to aggregate was not implemented.
+
+### Specification impact
+None — the cut ladder explicitly names and authorizes this exact reduction.
+
+### Implementation impact
+`eval/harness.py` (`--seeds` default), `eval/report.py` (limitation line), `README.md`.
+
+---
+
+## Decision 62: `eval/load.py` has no live-DB dependency on Day 4; `policy_version=1` is a stated placeholder
+
+### Context
+`RunProvenance.validate()` requires `policy_version` to exist in `policy_config`, which lives in
+a merchant DB seeded by `scripts/seed_merchant.py` — but Day 4's exit gate is about the four
+sanity scorers on synthetic datasets, with no live merchant/replay flow yet, and `eval/load.py`
+is explicitly the lowest-value, first-cut item in the plan's own budget ladder.
+
+### Decision
+`eval/harness.py` hardcodes `DEFAULT_POLICY_VERSION = 1` /
+`DEFAULT_POLICY_VERSIONS_AVAILABLE = (1,)` — the version `scripts/seed_merchant.py` seeds by
+default — documented inline as a Day-4 placeholder; `eval/load.py::load_truth(conn,
+merchant_id, runs)` is a real, idempotent (`INSERT ... ON CONFLICT DO UPDATE`) implementation,
+independently tested against a fresh schema-initialized SQLite DB
+(`tests/acceptance/test_load_truth.py`), but is not wired into the harness's own CLI run.
+
+### Alternatives considered
+Making `eval/harness.py` create/manage its own SQLite DB just to satisfy provenance validation
+— rejected: adds a stateful side effect (a DB file) to a CLI whose entire point on Day 4 is
+synthetic-data sanity checking, for a check (`policy_version` existence) that has no real
+merchant data to validate against yet.
+
+### Reasoning
+`RunProvenance.validate()` still does real work (config_hash recompute, model_version
+vocabulary, eval_prevalence range) even with a placeholder policy_version; only the "does this
+version exist in a real DB" check is deferred, consistent with `eval/load.py` itself being
+Day 5's wiring point per the plan's own dependency ordering.
+
+### Trade-off
+A Day-4 report's `policy_version: 1` field does not reflect any live merchant's actual policy
+history — it is provenance-shaped but not yet provenance-MEANINGFUL for that one field.
+
+### Specification impact
+None — `eval/load.py`'s real DB wiring remains Day 5's stated job (Day-4 Plan §9, "first cut").
+
+### Implementation impact
+`eval/harness.py`, `eval/load.py`, `tests/acceptance/test_load_truth.py`.

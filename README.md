@@ -4,11 +4,16 @@ Pre-authorization card-testing defence. Day 1 shipped a rules-only walking
 skeleton (`POST /v1/score` → auth → rules → decision → spool → SQLite → SSE
 → dashboard ticker). Day 2 added a deterministic, virtual-time-driven attack
 simulator and replay so the dashboard's threat band moves against the real
-scoring path. Day 3 adds the real feature path: a Redis-backed sliding-window
+scoring path. Day 3 added the real feature path: a Redis-backed sliding-window
 store (one atomic Lua script per score call), the canonical 24-feature
-definition (`packages/features/compute.py`), and a template narrator — see
-`Flow.md` for the actual execution paths and `Decisions.md` for the
-reasoning behind them.
+definition (`packages/features/compute.py`), and a template narrator. Day 4
+builds the thing that measures the thing that measures traffic: an offline
+evaluation harness (`eval/`), validated against four analytically-known
+sanity scorers before any real model exists to flatter — see `Flow.md` for
+the actual execution paths and `Decisions.md` for the reasoning behind them.
+
+**Completed: Days 1-4.** Days 5-8 (a real model, calibration, incident
+detection, the operator dashboard, Gemini narrator) are not yet built.
 
 ## Running the demo
 
@@ -34,6 +39,37 @@ workers). `docker-compose.yml` also defines a `redis-small` service
 (`maxmemory 2mb`, `allkeys-lru`); it exists only for the eviction-vs-TTL
 test and the application never connects to it.
 
+## Evaluation harness (Day 4)
+
+`eval/` is an offline harness, independent of the live scoring path, that generates simulator
+traffic, splits it, scores it with four analytically-known **sanity scorers** (perfect, random,
+inverted, always-positive), and renders a report:
+
+```
+uv run python -m eval.harness --split all --seed 42 [--seeds 5] [--out eval/outputs/]
+cat eval/outputs/report.md
+```
+
+- No model, no calibrator exist yet — the four sanity scorers are the "ruler," not a
+  detector. `--seeds` defaults to `1` (a stated limitation; the individual acceptance tests
+  still verify tolerances across 5 seeds independently — see `Decisions.md` decision 61).
+- The report's six blocks (per-tier recall@FPR, negative controls, discriminability audit,
+  cost, calibration, baselines) each render an explicit empty/deferred state rather than a
+  fabricated number for anything Day 4 cannot yet measure (no incident detector, no
+  calibrator, no replay corpus).
+- `medium` is now a real attack tier (`config/attack_tiers.yaml`); only `evasive` stays
+  `pending: "Day 7"`.
+- Seven negative-control scenarios exist (`packages/simulator/negative.py`):
+  `flash_sale, corporate_nat, cgnat, retry_storm, subscription_batch, nri_traffic,
+  shared_ip_legit`. Generate one by hand:
+  ```
+  uv run python -m packages.simulator.generate --seed 42 --scenario nri_traffic \
+      --out data/streams/n.jsonl --labels data/streams/n.labels.jsonl \
+      --episodes data/streams/n.eps.jsonl
+  ```
+  `nri_traffic` is marked **inert** in the report — it controls for `bin_is_foreign_issued`,
+  which stays `0.0` until Day 5's BIN-metadata join lands.
+
 ## Tests
 
 ```
@@ -43,6 +79,11 @@ uv run pytest -q -m slow        # durability, lock contention, SSE, Day-2 E2E
 uv run pytest -q -m characterization  # informational only, never a gate
 uv run pytest -q -m redis       # Day-3 Redis-backed tests; skip cleanly if Redis is down
 ```
+
+The Day-4 evaluation-harness tests (`tests/acceptance/test_harness_sanity.py`,
+`test_cost_thresholds.py`, `test_splits.py`, `test_negative_scenarios.py`, and others) run as
+part of the full suite with no extra flags or services required — `eval/` is pure stdlib +
+`pyyaml`, same as the simulator.
 
 Redis-marked tests read `TOLLGATE_REDIS_URL` (default `redis://localhost:6379`)
 and `TOLLGATE_REDIS_SMALL_URL` (default `redis://localhost:6380`, the

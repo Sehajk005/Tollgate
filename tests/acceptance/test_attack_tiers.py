@@ -184,12 +184,142 @@ class TestA10AttackTiersAntiCircularity:
     def test_pending_tiers_are_exempt_but_present(self):
         # Source: Day-2 Plan §C C3 -- Day 2 ships easy+hard; medium/evasive
         # exist as declared placeholders (Impl Plan §Day 2, Decision 38's
-        # Step 2 elaboration), not silently absent.
+        # Step 2 elaboration), not silently absent. Day-4 Plan (rev. 2) Step
+        # 2 -- THE ONE AUTHORIZED ACCEPTANCE-TEST EDIT: medium is filled in
+        # on Day 4 (no longer pending); evasive stays a Day-7 placeholder.
         tiers = _load_attack_tiers()
         assert "medium" in tiers and "evasive" in tiers
-        assert tiers["medium"].get("pending") == "Day 4"
+        assert "pending" not in tiers["medium"]
         assert tiers["evasive"].get("pending") == "Day 7"
 
     def test_banned_vocabulary_regex_actually_catches_a_planted_fake_source(self):
         assert BANNED_SOURCE_VOCAB.search("synthetic, chosen for the demo")
         assert not BANNED_SOURCE_VOCAB.search("Threat Model v2 §6 -- Tier E pacing")
+
+
+class TestMediumTierRealAndLadderMonotone:
+    """
+    Source: Day-4 Plan (rev. 2) §6 test 20 -- "Medium tier real, ladder
+    monotone." Medium's leaves pass A10; measured attempts/hour falls in
+    its configured band; the R1-R3 firing pattern is easy 3/3 -> medium
+    2/3 -> hard 0/3 on all 5 seeds, and each rule's margin is >=1.5x
+    computed from config arithmetic, not from a run (F20).
+    """
+
+    SEEDS = (1, 2, 3, 4, 5)
+    R1_THRESHOLD = 20
+    R2_THRESHOLD = 15
+    R3_THRESHOLD = 20
+    MIN_MARGIN = 1.5
+
+    def test_medium_leaves_pass_a10_and_attempt_rate_is_in_band(self, tmp_path):
+        tiers = _load_attack_tiers()
+        assert "pending" not in tiers["medium"]
+        band = tiers["medium"]["attempts_per_hour_band"]
+
+        events_path = tmp_path / "events.jsonl"
+        labels_path = tmp_path / "labels.jsonl"
+        episodes_path = tmp_path / "episodes.jsonl"
+        _generate(events_path, labels_path, episodes_path, seed=42, tier="medium", hours=3)
+
+        events = _read_jsonl(events_path)
+        labels = _read_jsonl(labels_path)
+        t_ms_by_id = {e["event_id"]: e["t_ms"] for e in events}
+        attack_t_ms = sorted(t_ms_by_id[lbl["event_id"]] for lbl in labels if lbl["is_attack"])
+        assert attack_t_ms, "medium tier produced no attack events"
+
+        span_hours = (attack_t_ms[-1] - attack_t_ms[0]) / 3_600_000.0
+        assert span_hours > 0
+        rate_per_hour = len(attack_t_ms) / span_hours
+        assert band["min"] <= rate_per_hour <= band["max"], (
+            f"medium-tier attempts/hour recomputed = {rate_per_hour:.1f}, "
+            f"outside configured band [{band['min']}, {band['max']}]"
+        )
+
+    def _rule_margins_from_config(self) -> dict:
+        """
+        Source: Day-4 Plan (rev. 2) §6 test 20 -- margins computed from
+        config arithmetic (attempts_per_hour, ip_pool_size, bin_pool_size,
+        episode_duration_s), never fitted to an observed run.
+        """
+        tiers = _load_attack_tiers()
+        margins = {}
+        for tier_name in ("easy", "medium", "hard"):
+            cfg = tiers[tier_name]
+            duration_s = cfg["episode_duration_s"]["value"]
+            attempts_per_hour = cfg["attempts_per_hour"]["value"]
+            total_attempts = max(1, (attempts_per_hour * duration_s) // 3600)
+            # Steady-state expectation over a trailing window: total
+            # attempts scaled by (window / episode_duration).
+            per_60s = total_attempts * 60 / duration_s
+            per_5m = total_attempts * 300 / duration_s
+            ip_pool = cfg["ip_pool_size"]["value"]
+            bin_pool = cfg["bin_pool_size"]["value"]
+
+            r1_expected = per_60s / ip_pool
+            r2_expected = per_5m / ip_pool
+            r3_expected = per_5m / bin_pool
+            margins[tier_name] = {
+                "r1": r1_expected / self.R1_THRESHOLD,
+                "r2": r2_expected / self.R2_THRESHOLD,
+                "r3": r3_expected / self.R3_THRESHOLD,
+            }
+        return margins
+
+    def test_medium_rule_margins_are_at_least_1_5x_from_config_arithmetic(self):
+        margins = self._rule_margins_from_config()
+        medium = margins["medium"]
+        # R1 must clear (silent): expected value well under 1.0x threshold.
+        assert medium["r1"] < 1.0 / self.MIN_MARGIN, f"R1 margin too thin: {medium['r1']!r}"
+        # R2/R3 must fire with >=1.5x margin over threshold.
+        assert medium["r2"] >= self.MIN_MARGIN, f"R2 margin too thin: {medium['r2']!r}"
+        assert medium["r3"] >= self.MIN_MARGIN, f"R3 margin too thin: {medium['r3']!r}"
+
+    def test_b0_firing_pattern_easy_3_medium_2_hard_0_across_five_seeds(self, tmp_path):
+        from packages.detect.rules import DayOneRules
+        from packages.features.memory_store import InMemoryWindowStore
+        from packages.features.compute import FeatureContext, classify_ua, compute_features
+
+        expected_fired_count = {"easy": 3, "medium": 2, "hard": 0}
+
+        for seed in self.SEEDS:
+            for tier_name, expected_count in expected_fired_count.items():
+                store = InMemoryWindowStore()
+                rules = DayOneRules(store)
+
+                events_path = tmp_path / f"{tier_name}-{seed}-events.jsonl"
+                labels_path = tmp_path / f"{tier_name}-{seed}-labels.jsonl"
+                episodes_path = tmp_path / f"{tier_name}-{seed}-episodes.jsonl"
+                _generate(events_path, labels_path, episodes_path, seed=seed, tier=tier_name, hours=3)
+
+                events = _read_jsonl(events_path)
+                labels = _read_jsonl(labels_path)
+                is_attack_by_id = {lbl["event_id"]: lbl["is_attack"] for lbl in labels}
+                events.sort(key=lambda e: e["seq"])
+
+                fired_names = set()
+                for event in events:
+                    ctx = FeatureContext(
+                        merchant_id="m-test",
+                        attempt_uid=f"a-{event['event_id']}",
+                        event_id=event["event_id"],
+                        payload_digest=f"pd-{event['event_id']}",
+                        ingest_ms=event["t_ms"],
+                        ip=event["ip"],
+                        ua_class=classify_ua("Mozilla/5.0"),
+                        card_hash=event["card_hash"],
+                        bin=event["bin"],
+                        amount_minor=event["amount_minor"],
+                        session_id=event["session_id"],
+                    )
+                    features = compute_features(store, ctx)
+                    evaluation = rules.evaluate_from_features(features)
+                    if is_attack_by_id.get(event["event_id"]):
+                        for result in evaluation.results:
+                            if result.fired:
+                                fired_names.add(result.name)
+
+                assert len(fired_names) == expected_count, (
+                    f"seed={seed} tier={tier_name}: expected {expected_count} rules firing "
+                    f"on attack traffic, got {len(fired_names)} ({sorted(fired_names)})"
+                )

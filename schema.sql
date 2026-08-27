@@ -238,7 +238,14 @@ CREATE TABLE IF NOT EXISTS episode_truth (
     episode_id     TEXT PRIMARY KEY,
     kind           TEXT NOT NULL,
     tier           TEXT,
-    scenario       TEXT,
+    -- Source: Day-4 Plan (rev. 2) Step 3 -- schema-canonical negative-
+    -- control scenario names (Backend Schema v2 §3.2's spelling; resolves
+    -- the six-vs-seven scenario vocabulary fork, F17). NULL for attack-tier
+    -- episodes (kind='attack').
+    scenario       TEXT CHECK (scenario IS NULL OR scenario IN (
+                       'flash_sale', 'corporate_nat', 'cgnat', 'retry_storm',
+                       'subscription_batch', 'nri_traffic', 'shared_ip_legit'
+                   )),
     started_at     TIMESTAMP NOT NULL,
     ended_at       TIMESTAMP NOT NULL,
     attempt_count  INTEGER NOT NULL,
