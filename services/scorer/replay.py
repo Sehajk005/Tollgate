@@ -83,10 +83,18 @@ class ReplayDriver:
 
     def reset(self) -> None:
         """Decision 36: Reset is required, not convenient -- VirtualClock cannot move
-        backwards and windows accumulate, so without it the demo runs once per process."""
+        backwards and windows accumulate, so without it the demo runs once per process.
+        Day-6 Plan critical constraint -- every new in-process Layer-2 / incident /
+        policy state is cleared here too, or Reset leaks across demo runs."""
         self._state.window_store.clear()
         if self._state.threat is not None:
             self._state.threat.clear()
+        if self._state.layer2 is not None:
+            self._state.layer2.reset()
+        if self._state.incidents is not None:
+            self._state.incidents.clear()
+        if self._state.policy_engine is not None:
+            self._state.policy_engine.clear()
         self._status = ReplayStatus(state="idle")
         self._stop_requested = False
 

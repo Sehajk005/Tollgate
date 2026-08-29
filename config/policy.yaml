@@ -1,0 +1,78 @@
+# Source: Day-6 Plan §3.0 -- the CUSUM / drift / policy tunables that today
+# live ONLY as `policy_config` column defaults, plus four Day-6 quantities
+# with no home anywhere else (tau_flag's derivation, the ARL0 target, L2b's
+# statistic parameters, the hysteresis_gap -> T_enter/T_exit mapping).
+# Source docs: TRD v2 §6.5 / §6.6 / §6.7; Decision 45 (tau_flag deferred to
+# Day 6). Leaves follow config/features.yaml's {value, unit, source} shape.
+#
+# Registered in eval/provenance.py::DEFAULT_CONFIG_PATHS so this file is
+# covered by config_hash -- adding it changes hash VALUES, but
+# test_config_hash.py is fully relative and asserts nothing absolute.
+#
+# `cusum.h` is DELIBERATELY ABSENT from this file: it is tuned from the
+# negative-control corpus by scripts/tune_cusum.py and written into a new
+# policy_config version (TRD §6.5 -- "h is tuned on negative controls only").
+# The serving path reads cusum_h from the pinned policy_config row, never
+# from here.
+
+cusum:
+  tau_flag_source:
+    value: "theta_throttle"
+    unit: enum
+    source: "Day-6 Plan D1 -- tau_flag = CostModel.tier_ladder()['throttle'] (~0.0645), DERIVED from config/cost_model.yaml, never a literal; Decision 45 deferred tau_flag to Day 6"
+  lambda_min:
+    value: 0.01
+    unit: attempts_per_bucket
+    source: "TRD v2 §6.5 -- lambda_0(t) floored at lambda_min = 0.01, verbatim"
+  rho:
+    value: 5.0
+    unit: ratio
+    source: "TRD v2 §11 row 5 -- lambda_1 = rho * lambda_0; mirrors policy_config.cusum_rho default"
+  bucket_s:
+    value: 10
+    unit: seconds
+    source: "TRD v2 §11 row 3 -- CUSUM bucket width; mirrors policy_config.cusum_bucket_s default"
+  target_arl0_buckets:
+    value: 8640
+    unit: buckets
+    source: "Day-6 Plan D3 -- ARL0 target = 24 virtual hours at 10 s buckets (<=1 false alarm / merchant / 24 h); no document states a number, decided as an operator-facing SLO"
+
+drift:
+  window_s:
+    value: 1800
+    unit: seconds
+    source: "TRD v2 §6.6 -- 30 virtual minutes; mirrors policy_config.drift_window_s default"
+  exceedance_quantile:
+    value: 0.95
+    unit: quantile
+    source: "Day-6 Plan D4 -- q_hi = the store's learned 95th percentile of distinct_cards_per_ip_30m; TRD §6.6 gives the shape, not the quantile"
+  p1:
+    value: 0.5
+    unit: probability
+    source: "Day-6 Plan D4 -- SPRT alternative-hypothesis exceedance rate; p0 = 1 - exceedance_quantile by construction"
+  alpha:
+    value: 0.01
+    unit: probability
+    source: "Day-6 Plan §3.2 -- SPRT type-I error; A = ln((1 - beta) / alpha)"
+  beta:
+    value: 0.05
+    unit: probability
+    source: "Day-6 Plan §3.2 -- SPRT type-II error; A = ln((1 - beta) / alpha)"
+  enabled:
+    value: true
+    unit: bool
+    source: "Day-6 Plan §9 -- the L2b cut switch; set false to cut Layer 2b at the 20:00 checkpoint without removing code"
+
+policy:
+  hysteresis_gap:
+    value: 0.08
+    unit: probability
+    source: "TRD v2 §6.7 -- rise to T requires p >= theta_T, fall below T requires p < theta_T - hysteresis_gap; mirrors policy_config.hysteresis_gap default (Day-6 Plan D7)"
+  enforcement_ttl_s:
+    value: 900
+    unit: seconds
+    source: "Day-6 Plan §3.0 -- enforcement_action.expires_at = applied_at + enforcement_ttl_s"
+  control_fraction:
+    value: 0.05
+    unit: fraction
+    source: "Eval Protocol v2 §6.1 -- control arm fraction; mirrors policy_config.control_fraction default (Day-6 Plan D9: deterministic one-per-block-of-round(1/control_fraction))"

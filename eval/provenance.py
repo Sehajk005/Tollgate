@@ -40,6 +40,10 @@ DEFAULT_CONFIG_PATHS: tuple = (
     # BUILD INPUT and must be provenanced. test_config_hash.py is fully
     # relative, so this changes hash values but breaks no assertion.
     "config/features.yaml",
+    # Source: Day-6 Plan Step 2 / §3.0 -- config/policy.yaml carries the
+    # CUSUM / drift / policy tunables (a BUILD INPUT). Same reasoning: the
+    # test is fully relative, so hash values change but no assertion breaks.
+    "config/policy.yaml",
 )
 BASELINE_PROFILE_SHA_PATH = REPO_ROOT / "data" / "baseline" / "online_retail_ii.profile.sha256"
 FIXTURE_SHA_PATH = REPO_ROOT / "tests" / "fixtures" / "golden.sha256"

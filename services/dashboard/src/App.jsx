@@ -62,6 +62,9 @@ export default function App() {
   const [speed, setSpeed] = useState(60);
   const [replayStatus, setReplayStatus] = useState(IDLE_REPLAY);
   const [actionError, setActionError] = useState(null);
+  // Day 6: the blast-radius cap. Server-computed; rendered verbatim, never
+  // derived locally (same discipline as the threat band).
+  const [enforcement, setEnforcement] = useState(null);
 
   useEffect(() => {
     const source = new EventSource("/v1/stream");
@@ -71,6 +74,7 @@ export default function App() {
       const data = JSON.parse(evt.data);
       setEvents((prev) => [data, ...prev].slice(0, 100));
       if (data.replay) setReplayStatus(data.replay);
+      if (data.enforcement) setEnforcement(data.enforcement);
     };
     return () => source.close();
   }, []);
@@ -131,8 +135,29 @@ export default function App() {
           <Tile label="ATTEMPTS &middot; 5 MIN" value={attemptsIn5Min} caption="live" />
           <Tile label="DECLINE RATE" value="—" caption="needs /v1/outcome &middot; Day 7" />
           <Tile label="CARDS PER IP &middot; TOP" value={cardsPerIpTop == null ? "—" : cardsPerIpTop} caption="store-relative quantile &middot; Day 5" />
-          <Tile label="ENFORCEMENT" value="— / 10" caption="blast-radius cap &middot; Day 6" />
+          <Tile
+            label="ENFORCEMENT"
+            value={enforcement ? `${enforcement.active} / ${enforcement.k_max}` : "—"}
+            caption={enforcement ? "blast-radius cap" : "blast-radius cap · Day 6"}
+          />
         </div>
+
+        {/* Day 6: advisory-mode banner. System-state, NOT a threat colour --
+            monochrome on a firm hairline (UIUX v2 §6.10). Exact copy per
+            UIUX v2 §5 (line 443). */}
+        {enforcement && enforcement.advisory_mode && (
+          <div style={{
+            display: "flex", alignItems: "center", gap: "0.5rem", margin: "0 0 1rem",
+            padding: "0.5rem 0.8rem", background: "#f2f2f2", border: "1px solid #999",
+            color: "#333", fontSize: "0.82rem",
+          }}>
+            <span aria-hidden="true">{"⌁"}</span>
+            <span>
+              Enforcement paused — blast-radius cap reached ({enforcement.active} / {enforcement.k_max}).
+              Scoring continues. Resolve incidents to resume.
+            </span>
+          </div>
+        )}
 
         <ul style={{ listStyle: "none", padding: 0, margin: 0, fontSize: "0.82rem" }}>
           {events.map((e, i) => (
@@ -143,6 +168,16 @@ export default function App() {
               {e.rules_fired && e.rules_fired.length > 0 && (
                 <span style={{ opacity: 0.6 }}> -- rules: {e.rules_fired.join(", ")}</span>
               )}
+              {e.incident && (
+                <span style={{ opacity: 0.6 }}>
+                  {" "}-- incident {e.incident.pseudonym} [{e.incident.state}] {e.incident.detector}
+                  {" → "}{e.incident.in_force_tier}
+                  {e.incident.proposed_tier !== e.incident.in_force_tier
+                    ? ` (proposed ${e.incident.proposed_tier})`
+                    : ""}
+                </span>
+              )}
+              {e.control_arm && <span style={{ opacity: 0.6 }}> -- control</span>}
             </li>
           ))}
         </ul>

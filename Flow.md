@@ -548,6 +548,138 @@ to the calibrated posterior is Day 6 (Decision 57); the R1-R3 tier floors hold
 unconditionally (Decision 17). With **no** artifact present the path is byte-identical to
 Day 4 -- the authorized rules-only fallback.
 
+## 14. [Day 6] Layer 2 + policy -- CUSUM / drift -> incident state machine -> cost-derived enforcement
+
+Source: Day-6 Plan (`08-DAY-6-IMPLEMENTATION-PLAN.md`). Day 6 closes the loop
+the first five days left open: the system now **decides**, entity-scoped and
+cost-derived, never automatically above `challenge`.
+
+### 14.1 Offline preparation (run once, in order)
+
+```
+python -m scripts.learn_store_baseline --db data/corpus/tollgate.db --demo-db tollgate.db
+  reads ONLY the 7 negative-control runs (m-eval-12..18, episode_truth.kind='negative_control')
+  re-scores each attempt's feature_snapshot through models/ (the SERVING regime, Decision 83)
+  writes store_baseline rows: hourly_volume_profile (24 floats), flagged_rate_mean (p_bar_0),
+    cards_per_ip_quantiles {"5m": [...11...], "30m": [...11...]}
+  -- store_baseline is consumed ONLY by packages/detect/ (Decision 80); compute_features untouched
+
+python -m scripts.tune_cusum --db data/corpus/tollgate.db --demo-db tollgate.db
+  tau_flag = CostModel.tier_ladder()["throttle"]  (Decision 70, DERIVED)
+  replays each negative-control run's (ingest_time, score_calibrated) through PoissonCusum
+    at tau_flag, using that merchant's own store_baseline for lambda_0(t)
+  bisects h for ZERO false alarms across the 7 runs; validates ARL0 >= 8,640 on Poisson noise
+  writes a NEW policy_config version: cusum_h (tuned) + thresholds = CostModel.tier_ladder()
+  TuningProvenance names every merchant_id read -- the assertion surface for
+    test_cusum_tuning_isolation.py (negative controls only; no kind='attack' row touched)
+```
+
+### 14.2 Startup -- guarded load (services/scorer/deps.py::_load_layer2)
+
+```
+ScorerState.build_default()
+  _load_model(models/)                 -> (Layer1Model, Calibrator) | (None, None)   [Day 5]
+  _load_layer2(db_path, merchant_demo) -> (policy, baseline, layer2, incidents, engine, ttl)
+    load_policy_config(latest)  -- None or thresholds == {} -> Layer 2 DISABLED (Day-5 path)
+    load_store_baseline         -- None                     -> Layer 2 DISABLED (Day-5 path)
+    CusumParams(rho, h, bucket_s, lambda_min)  DriftParams(quantile, p1, alpha, beta, enabled)
+    Layer2Engine(baseline, cusum_params, drift_params, tau_flag)
+    IncidentRegistry()   PolicyEngine()   policy_versions = {version: snapshot}
+```
+
+When `state.policy is None` the entire block below is skipped and every
+`attempt_score` / SSE field is byte-identical to Day 5 (tests/conftest.py's
+`scorer_state`, `eval/corpus.py::_replay_one` -- both build bare states, so the
+Day-5 corpus / model / audit / eval_run rows are provably unaffected;
+verified: the rebuilt corpus's `attempt_score` digest is unchanged).
+
+### 14.3 The one seam (services/scorer/scoring.py::score_attempt)
+
+```
+features   = compute_features(...)     -- now 11 windows in the SAME score_path() call;
+                                          cusum_bucket_index / distinct_cards_per_ip_30m_raw
+                                          ride on FeatureVector, NOT in FEATURE_NAMES / snapshot()
+evaluation = rules.evaluate_from_features(features)
+
+-- Day 6, INSIDE the latency_ms window, only when layer2 is live and the attempt is not an
+-- idempotent replay (M7):
+
+regime, rate_ratio = layer2.regime_for(merchant_id, features.cusum_bucket_index)
+     -- commits every CUSUM bucket strictly BEFORE this attempt's bucket and returns the
+        committed alarm state, so the alarm regime that picks the prior is a pure function
+        of already-scored buckets (no circularity with the tau_flag gate)
+
+model block -- unchanged EXCEPT: regime == "alarm" -> pi_s = serving_prior("alarm", state,
+               rate_ratio); ScoreRecord.regime / prior_used become real values
+
+_resolve_layer2:
+  scope   = "bin" if only R3 fired else "ip"          (Decision 85)
+  entity  = resolve_entity(scope, ip, ua_class, card_hash, bin)   -- card -> ipua -> ip, never asn
+  signal  = layer2.observe(entity, bucket_index, p_calibrated, distinct_cards_per_ip_30m_raw,
+                           rule_families, card_hash)
+             -- Layer 2a: n_t += (p_calibrated >= tau_flag); S_live = PoissonCusum.peek(...)
+             -- Layer 2b: SequentialDrift.observe(distinct_cards_per_ip_30m, q_hi)  [ip / ipua]
+             -- fired = cusum_alarm OR drift_fired ; detector in {cusum, drift, both, none}
+  incident = incidents.step(entity, ingest_ms, signal, cooldown_seconds, pinned_policy_version)
+             -- OPEN | ESCALATED | COOLING | CLOSED ; re-fire in cooldown MERGES (same id);
+                harm fields (attempts_before_alert, cards_exposed_before_alert, time_to_detect_s
+                in event time, cusum_stat_at_alert) stamped at first fire
+  snapshot = policy_versions[incident.pinned_policy_version]  if a live incident pre-existed,
+             else the live snapshot   (Backend Schema §3.1 -- pinned, cached, one DB read max)
+  outcome  = engine.resolve(p_calibrated, evaluation, entity, snapshot, incident_open,
+                            corroborated, active_enforced_count, bin_is_foreign_issued, regime):
+      1. ladder      -- select_ladder(bin_is_foreign_issued); domestic drops step_up
+      2. l2_tier     -- tier_from_score(p, thresholds, ladder)  [only if incident_open]
+      3. P3          -- uncorroborated (< 2 rule-families across < 2 buckets) -> cap at monitor
+      4. hysteresis  -- rise at theta_T, fall below theta_T - 0.08  (score-driven tier only)
+      5. rule floor  -- proposed = max(l2_tier, evaluation.minimum_tier)   (rules raise, never lower)
+      6. auto-ceiling-- in_force = apply_auto_ceiling(proposed, challenge); step_up/block PROPOSED
+      7. K_max       -- active_enforced_count >= k_max_entities & new entity -> advisory, in_force=allow
+      8. control arm -- 1 per block of 20 eligible, seeded on merchant+policy_version -> in_force=allow
+  incidents.note_tier(incident, proposed_tier, ...)   -- appends a tier_transition, may ESCALATE
+
+decision = outcome.in_force_tier    (was: apply_auto_ceiling(evaluation.minimum_tier))
+```
+
+### 14.4 Persistence -- through the existing spool -> drainer -> SQLite
+
+`score_attempt` adds `incident` / `incident_entity` / `tier_transition` /
+`enforcement` keys to the same spool payload it already writes.
+`Drainer.drain_once` gains guarded branches: `upsert_incident` (ON CONFLICT DO
+UPDATE -- state changes over the incident's life) BEFORE `insert_score`
+(FK), then `insert_tier_transition` / `insert_enforcement_action` (INSERT OR
+IGNORE, deterministic ids) AFTER. Re-drain from byte 0 stays idempotent --
+the incident's final state is re-derived by replaying its ordered transitions.
+`attempt_score.incident_id` / `regime` / `tier_ladder` / `control_arm` /
+`policy_version` stop being hardcoded.
+
+Enforcement rows: `throttle` / `challenge` -> `requires_confirmation=0`,
+`confirmed_by='auto'`, `applied_at=ingest_ms` (in force). `step_up` / `block`
+-> `requires_confirmation=1`, `confirmed_by=NULL`, `applied_at=NULL`
+(proposed, never applied). `monitor` / `allow` / control / advisory -> no row.
+
+### 14.5 SSE + D1
+
+`scoring.py` adds three keys to the SSE event: `incident`
+(`{incident_id, state, detector, entity_type, pseudonym, proposed_tier,
+in_force_tier}` or null -- **`pseudonym` only, never a raw key**),
+`enforcement` (`{active, k_max, advisory_mode}`), `control_arm`.
+`services/dashboard/src/App.jsx`: the `ENFORCEMENT` tile renders `active /
+k_max` live; the advisory banner (system-state, monochrome, never a threat
+colour -- UIUX §6.10) appears at the cap. No incident drawer / timeline /
+confirm dialog -- D3 is Day 8.
+
+### 14.6 What Layer 2 catches, in practice
+
+With `models/` loaded, `p_bar_0 ~ 0.60` (weak 4-feature Day-5 model,
+Decision 83), so Layer 2a's `lambda_0` is high and the CUSUM is conservative:
+it does not fire on the simulator's card-fan-out `easy` / `medium` tiers or
+on low-and-slow `hard`. **Layer 2b (distinct-card drift) is the operative
+detector for `easy` and `medium`** (verified: TTD ~76 s, `cards_exposed_
+before_alert = 32`, incident -> ESCALATED -> `challenge` in force).
+**`hard` is undetected by Layer 2** and is reported as such, not tuned around
+(Day-6 Plan §8 risk 2). The R1-R3 rule floors remain active on every tier.
+
 ---
 
 ## 10. What does NOT exist yet (explicitly deferred)
@@ -557,12 +689,25 @@ Day 4 -- the authorized rules-only fallback.
 - No `store_baseline` row (Day 4); `distinct_cards_per_ip_5m_q`,
   `distinct_cards_per_ipua_5m_q`, `amount_percentile_vs_store`, `store_volume_deviation_
   sigma`, `store_decline_rate_deviation_sigma`, `foreign_bin_share_sigma` stay at `0.0`.
-- No CUSUM statistic (`S_t`) -- Day 3 builds only the raw per-bucket attempt counter
-  `windows.lua` step 6 names; `τ_flag`-gated counting is explicitly deferred to Day 6
-  (Decisions.md decision 45). No drift detection / real incidents / entity resolution --
-  `packages/detect/threat_state.py`'s rollup is an explicit Day-2 stand-in Day 6's incident
-  detector replaces.
-- No D3/D6 dashboard screens, no design tokens, no Stream Rail, no Gemini narrator backend
+- [Day 6 DONE] CUSUM `S_t` (`packages/detect/cusum.py`), the distinct-card drift SPRT
+  (`packages/detect/drift.py`), the incident episode state machine
+  (`packages/detect/episode.py`), entity resolution + the cost-derived policy engine
+  (`packages/detect/policy.py`) and the `Layer2Engine` coordinator
+  (`packages/detect/layer2.py`) all exist and are wired into `score_attempt()` behind a
+  guard (§14). `packages/detect/threat_state.py` is retained ONLY as the no-policy fallback
+  (Decision 81). `τ_flag`-gated counting is in-process on `ScorerState` (Decision 71).
+  Incidents / enforcement persist through the existing spool -> drainer -> SQLite path.
+- [Day 6] Layer 2a is conservative with the weak Day-5 model loaded (`p_bar_0 ~ 0.60`,
+  Decision 83) and does not fire on the simulator's card-fan-out `easy` / `medium` tiers
+  or on low-and-slow `hard`. **Layer 2b is the operative Layer-2 detector for `easy` /
+  `medium`; `hard` is undetected by Layer 2** (reported honestly, Day-6 Plan §8 risk 2).
+- [Day 6] No Redis-backed CUSUM / enforcement state -- per-process only (Decision 71); no
+  `bin_metadata` load / real AFA ladder (`select_ladder` is a tested pure function, live
+  `tier_ladder` stays `"domestic"`); P3's ">= 2 buckets" is enforced in memory, not
+  recorded in any column (Decision 84); the incident detail screen / confirmation API /
+  Gemini narrator are Day 8 -- Day 6 only produces the proposed-but-unconfirmed
+  `enforcement_action` rows those screens will act on.
+- No D3 dashboard screen, no design tokens, no Stream Rail, no Gemini narrator backend
   (Day 8); the template narrator (§11 above) is not yet called from `score_attempt()`.
 - No BIN metadata join -- `tier_ladder` is hardcoded `"domestic"`, `bin_is_foreign_issued`
   and `foreign_bin_share_5m` stay at `0.0`.
@@ -573,8 +718,11 @@ Day 4 -- the authorized rules-only fallback.
   `feature_snapshot` unauthenticated; accepted for the loopback-bound demo
   (Threat Model v2 addendum, decisions.md decision 34), hardened Day 7.
 - `tests/fixtures/handmade_40.jsonl` (the independent human-authored oracle) has not been
-  supplied yet; `tests/acceptance/test_handmade_40.py` xfails with a named reason until it is
-  (Decisions.md decision 14 -- must not be generated by the implementation agent).
+  supplied yet; `tests/acceptance/test_handmade_40.py` (Day-3 feature values) AND
+  `tests/acceptance/test_handmade_40_incident.py` (Day-6 incident alert point) both xfail
+  with a named reason until it is (Decisions.md decision 14 -- must not be generated by the
+  implementation agent). **Day 6 ships and is tagged `day-6-done` only after a human
+  supplies the fixture + the hand-counted `alert_seq` and that incident gate goes green.**
 - [Day 5 DONE] The `l1-lgbm-v1` LightGBM detector (`packages/detect/model.py`), the Platt
   calibrator (`packages/detect/calibrate.py`), the persistent replay corpus
   (`eval/corpus.py`), and B0 (read from `attempt_score.score_raw`) all exist and are wired
@@ -585,10 +733,11 @@ Day 4 -- the authorized rules-only fallback.
 - [Day 5] Six model features are EXCLUDED by the audit (Decision 64); the model runs on
   4 live features and is weaker than B0 except on `hard` (where B0 fires 0/3). Reinstating
   them needs the store-relative quantile transforms (Decision 16).
-- [Day 5] `apply_auto_ceiling` is unchanged -- the calibrated posterior is computed and
-  logged (`score_calibrated`, `prior_used`) but no `theta_T` is applied to it. No
-  theta-indexed cost curve, no "cost-optimal threshold," no currency-amount gap -- Block 4
-  and Decision 57 still defer those to Day 6.
+- [Day 5 -> Day 6 DONE] `apply_auto_ceiling` is still Threat Model §4/P1's ceiling
+  mechanism, but the calibrated posterior now IS applied to `theta_T` via
+  `PolicyEngine.tier_from_score` (Decision 57 was deferred to Day 6). Still no
+  theta-indexed cost curve rendered into `eval/report.py` and no currency-amount headline
+  -- Report Block 1 / Block 4 keep their honest "deferred" text (Day 8/9, Day-6 Plan §9).
 - [Day 4] `nri_traffic`'s control is inert: `bin_is_foreign_issued` is 0.0 for every attack-tier
   event today (no BIN metadata join, per the bullet above) -- `test_nri_control_tripwire.py`
   fails the moment that changes while attack-side foreign share stays zero. (Report Block 2

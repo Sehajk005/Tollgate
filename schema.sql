@@ -186,8 +186,11 @@ CREATE TABLE IF NOT EXISTS incident (
 
 CREATE TABLE IF NOT EXISTS incident_entity (
     incident_id   TEXT NOT NULL REFERENCES incident(incident_id),
-    entity_type   TEXT NOT NULL,
-    entity_key    TEXT NOT NULL,
+    -- Source: Day-6 Plan §3.5 / TRD v2 §6.7 -- "entity-scoped, never
+    -- store-wide -- enforced in the schema, not just in code". The narrowest
+    -- key that covers the evidence: card -> (ip,ua_class) -> ip; never asn.
+    entity_type   TEXT NOT NULL CHECK (entity_type IN ('ip','ipua','bin','card')),
+    entity_key    TEXT NOT NULL CHECK (length(entity_key) > 0),
     pseudonym     TEXT NOT NULL,
     attempt_count INTEGER NOT NULL DEFAULT 0,
     first_seen    TIMESTAMP NOT NULL,
@@ -209,8 +212,12 @@ CREATE TABLE IF NOT EXISTS enforcement_action (
     action_id     TEXT PRIMARY KEY,
     incident_id   TEXT REFERENCES incident(incident_id),
     merchant_id   TEXT NOT NULL REFERENCES merchant(merchant_id),
-    entity_type   TEXT NOT NULL,
-    entity_key    TEXT NOT NULL,
+    -- Source: Day-6 Plan §3.5 / TRD v2 §6.7 -- store-wide enforcement is
+    -- unrepresentable: entity_type is a closed set and entity_key is
+    -- non-empty, enforced in the schema so a hand-crafted store-wide row
+    -- is rejected by the DB, not merely by code.
+    entity_type   TEXT NOT NULL CHECK (entity_type IN ('ip','ipua','bin','card')),
+    entity_key    TEXT NOT NULL CHECK (length(entity_key) > 0),
     tier          TEXT NOT NULL,
     requires_confirmation BOOLEAN NOT NULL DEFAULT 0,
     confirmed_by  TEXT,

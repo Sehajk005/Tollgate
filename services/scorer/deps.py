@@ -9,10 +9,11 @@ from __future__ import annotations
 import logging
 import os
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
+import yaml
 from fastapi import Request
 
 from packages.clock.clock import Clock, SystemClock
@@ -33,11 +34,16 @@ logger = logging.getLogger("tollgate.scorer")
 if TYPE_CHECKING:
     import asyncio
 
+    from packages.detect.baseline import StoreBaseline
     from packages.detect.calibrate import Calibrator
+    from packages.detect.episode import IncidentRegistry
+    from packages.detect.layer2 import Layer2Engine
     from packages.detect.model import Layer1Model
+    from packages.detect.policy import PolicyEngine, PolicySnapshot
     from services.scorer.replay import ReplayDriver
 
 DEFAULT_MODEL_DIR = Path("models")
+DEFAULT_POLICY_YAML = Path("config/policy.yaml")
 
 DEFAULT_PRIOR_STEADY_STATE = 0.001
 # Source: Day-2 Plan §G / scripts/seed_merchant.py -- Day 2 is single-merchant
@@ -77,6 +83,24 @@ class ScorerState:
     # informs score_raw/score_calibrated only; apply_auto_ceiling is unchanged.
     model: Optional["Layer1Model"] = None
     calibrator: Optional["Calibrator"] = None
+    # Day-6 Plan §3.10 -- Layer 2 + policy, loaded guarded exactly like
+    # `model`/`calibrator`. When `policy` is None the whole Layer-2 block in
+    # services/scorer/scoring.py is skipped and the path is byte-identical to
+    # Day 5. tests/conftest.py::scorer_state and eval/corpus.py::_replay_one
+    # both build bare states, so the Day-5 corpus/model/audit/eval_run rows
+    # are provably unaffected.
+    policy: Optional["PolicySnapshot"] = None
+    baseline: Optional["StoreBaseline"] = None
+    layer2: Optional["Layer2Engine"] = None
+    incidents: Optional["IncidentRegistry"] = None
+    policy_engine: Optional["PolicyEngine"] = None
+    enforcement_ttl_ms: int = 900_000
+    # Day-6 Plan §3.3 -- an incident resolves against its PINNED policy
+    # version, never the live one. Cache of {version -> PolicySnapshot};
+    # populated with the live version at load, a pinned version is loaded
+    # once (then cached) on first miss. `default_factory=dict` so bare
+    # ScorerState(...) constructions are unaffected.
+    policy_versions: dict = field(default_factory=dict)
 
     def db_read_conn(self):
         return connect(self.db_path)
@@ -157,6 +181,86 @@ class ScorerState:
             return None, None
 
     @staticmethod
+    def _load_policy_yaml_params(policy_yaml: Path = DEFAULT_POLICY_YAML) -> dict:
+        """Parse config/policy.yaml's {value,unit,source} leaves into the flat
+        dict the Layer-2 engines need. Only the tunables with no policy_config
+        column live here (lambda_min, the ARL0 target, L2b's statistic
+        params, enforcement_ttl_s)."""
+        raw = yaml.safe_load(Path(policy_yaml).read_text(encoding="utf-8"))
+
+        def v(node):
+            return node["value"] if isinstance(node, dict) and "value" in node else node
+
+        return {
+            "lambda_min": float(v(raw["cusum"]["lambda_min"])),
+            "drift_exceedance_quantile": float(v(raw["drift"]["exceedance_quantile"])),
+            "drift_p1": float(v(raw["drift"]["p1"])),
+            "drift_alpha": float(v(raw["drift"]["alpha"])),
+            "drift_beta": float(v(raw["drift"]["beta"])),
+            "drift_enabled": bool(v(raw["drift"]["enabled"])),
+            "enforcement_ttl_s": int(v(raw["policy"]["enforcement_ttl_s"])),
+        }
+
+    @staticmethod
+    def _load_layer2(db_path: Path, merchant_id: str, policy_yaml: Path = DEFAULT_POLICY_YAML):
+        """
+        Source: Day-6 Plan §3.10 -- guarded, exactly like `_load_model`.
+        Returns (policy, baseline, layer2, incidents, policy_engine, ttl_ms)
+        only when a policy_config row with a populated `thresholds` column AND
+        a store_baseline row both exist; any other case returns all-None so
+        the serving path stays Day-5-identical (the authorized fallback).
+        """
+        none = (None, None, None, None, None, 900_000)
+        try:
+            from packages.detect.baseline import StoreBaseline  # noqa: F401
+            from packages.detect.cusum import CusumParams
+            from packages.detect.drift import DriftParams
+            from packages.detect.episode import IncidentRegistry
+            from packages.detect.layer2 import Layer2Engine
+            from packages.detect.policy import PolicyEngine
+            from packages.storage.repository import load_policy_config, load_store_baseline
+
+            conn = connect(db_path, read_only=True)
+            try:
+                snapshot = load_policy_config(conn, merchant_id)
+                baseline = load_store_baseline(conn, merchant_id)
+            finally:
+                conn.close()
+
+            if snapshot is None or not snapshot.thresholds or "throttle" not in snapshot.thresholds:
+                logger.info("no policy_config with thresholds for %s; Layer 2 disabled (Day-5 path)", merchant_id)
+                return none
+            if baseline is None:
+                logger.info("no store_baseline row for %s; Layer 2 disabled (Day-5 path)", merchant_id)
+                return none
+
+            yaml_params = ScorerState._load_policy_yaml_params(policy_yaml)
+            cusum_params = CusumParams(
+                rho=snapshot.cusum_rho, h=snapshot.cusum_h,
+                bucket_s=snapshot.cusum_bucket_s, lambda_min=yaml_params["lambda_min"],
+            )
+            drift_params = DriftParams(
+                exceedance_quantile=yaml_params["drift_exceedance_quantile"],
+                p1=yaml_params["drift_p1"], alpha=yaml_params["drift_alpha"],
+                beta=yaml_params["drift_beta"], enabled=yaml_params["drift_enabled"],
+            )
+            layer2 = Layer2Engine(
+                baseline=baseline, cusum_params=cusum_params, drift_params=drift_params,
+                tau_flag=snapshot.thresholds["throttle"],
+            )
+            logger.info(
+                "loaded Layer 2 for %s: policy v%d, cusum_h=%.3f, tau_flag=%.5f, drift_enabled=%s",
+                merchant_id, snapshot.version, snapshot.cusum_h, layer2.tau_flag, drift_params.enabled,
+            )
+            return (
+                snapshot, baseline, layer2, IncidentRegistry(), PolicyEngine(),
+                yaml_params["enforcement_ttl_s"] * 1000,
+            )
+        except Exception:  # noqa: BLE001 -- any load failure falls back to the Day-5 path
+            logger.exception("Layer 2 load failed for %s; falling back to the Day-5 serving path", merchant_id)
+            return none
+
+    @staticmethod
     def build_default(
         db_path: Path = Path("tollgate.db"),
         spool_dir: Path = Path("spool"),
@@ -170,10 +274,16 @@ class ScorerState:
         drainer = Drainer(db_path=db_path, spool_path=spool.path)
         event_bus = InProcessEventBus()
         model, calibrator = ScorerState._load_model(model_dir)
+        policy, baseline, layer2, incidents, policy_engine, ttl_ms = ScorerState._load_layer2(
+            db_path, DEMO_MERCHANT_ID
+        )
         state = ScorerState(
             clock=clock, ulid=ulid, window_store=window_store, rules=rules,
             spool=spool, drainer=drainer, event_bus=event_bus, db_path=db_path,
             threat=ThreatRollup(), model=model, calibrator=calibrator,
+            policy=policy, baseline=baseline, layer2=layer2, incidents=incidents,
+            policy_engine=policy_engine, enforcement_ttl_ms=ttl_ms,
+            policy_versions={policy.version: policy} if policy is not None else {},
         )
         # Local import: breaks the deps.py <-> replay.py import cycle
         # (replay.py imports ScorerState for its own type hints). By the

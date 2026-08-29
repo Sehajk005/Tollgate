@@ -51,6 +51,7 @@ markers = [
     "slow: exercises a real subprocess (durability / lock-contention tests)",
     "safety: simulator import-closure / network-egress safety tests (Day 2 §I)",
     "redis: requires a reachable Redis (TOLLGATE_REDIS_URL); skips otherwise (Day-3 Plan §5)",
+    "metamorphic: Layer-2 metamorphic relations M1-M8 (Day-6 Plan §4 / Impl Plan §5)",
 ]
 
 [build-system]
