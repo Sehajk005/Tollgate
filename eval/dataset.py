@@ -53,6 +53,13 @@ class Sample:
     amount_minor: int
     gateway_status: str
     decline_code: Optional[str]
+    # Source: Day-5 Plan Step 3 (seam S3) -- which run in `build_runs()` order
+    # produced this sample. `event_id` is only unique WITHIN a run
+    # (packages/simulator/stream.py::merge_and_number restarts at "e-0000000"
+    # per run), so (run_index, event_id) is the join key to the Day-5 feature
+    # corpus. Defaulted so every existing Sample(...) construction and the
+    # dataclasses.replace() in compute_entity_overlap keep working unchanged.
+    run_index: int = -1
 
 
 @dataclass(frozen=True)
@@ -90,7 +97,7 @@ def build_dataset(runs: Sequence[Tuple[Optional[str], SimulatorOutput]]) -> List
     (they have no attack-tier stream_tier of their own).
     """
     samples: List[Sample] = []
-    for stream_tier, output in runs:
+    for run_index, (stream_tier, output) in enumerate(runs):
         episodes_by_id = {ep.episode_id: ep for ep in output.episodes}
         for event in output.events:
             label = next(lbl for lbl in output.labels if lbl.event_id == event.event_id)
@@ -106,6 +113,10 @@ def build_dataset(runs: Sequence[Tuple[Optional[str], SimulatorOutput]]) -> List
                 ip=event.ip, bin=event.bin, card_hash=event.card_hash,
                 amount_minor=event.amount_minor, gateway_status=label.gateway_status,
                 decline_code=label.decline_code,
+                # Source: Day-5 Plan Step 3 -- run_index is the position of this
+                # run in the `runs` sequence, which build_runs()/replay_corpus()
+                # keep aligned with merchant_id f"m-eval-{run_index:02d}".
+                run_index=run_index,
             ))
     return samples
 

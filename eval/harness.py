@@ -27,6 +27,7 @@ unvalidated provenance.
 from __future__ import annotations
 
 import argparse
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -54,8 +55,10 @@ from eval.metrics import (
 )
 from eval.provenance import RunProvenance, config_hash
 from eval.scorers import AlwaysPositiveScorer, InvertedScorer, PerfectScorer, RandomScorer, Scorer
-from packages.simulator.generate import build_negative_stream, build_stream
-from packages.simulator.negative import SCENARIOS
+
+# Source: Day-5 Plan Step 2 -- run construction moved to eval.corpus.build_runs
+# (delegated from build_full_dataset); this module no longer builds streams
+# directly.
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUT_DIR = REPO_ROOT / "eval" / "outputs"
@@ -178,17 +181,16 @@ def build_full_dataset(
     temporal split can put attack representation on both sides -- a
     single build_stream() run has exactly one attack episode) plus one run
     per negative-control scenario, all at seed-derived sub-seeds.
+
+    Source: Day-5 Plan Step 2 -- delegates to `eval.corpus.build_runs`, which
+    IS the loop this function used to inline. One construction, so the Day-5
+    feature corpus and this dataset cannot drift. Sample ordering and content
+    are byte-identical to Day 4.
     """
-    runs = []
-    block_i = 0
-    for _ in range(n_blocks_per_tier):
-        for tier in ("easy", "medium", "hard"):
-            epoch_ms = block_i * hours * 3_600_000
-            runs.append((tier, build_stream(seed=seed + block_i, tier=tier, hours=hours, epoch_ms=epoch_ms)))
-            block_i += 1
-    for scenario in SCENARIOS:
-        runs.append((None, build_negative_stream(seed=seed, scenario=scenario, hours=hours)))
-    samples = build_dataset(runs)
+    from eval.corpus import build_runs
+
+    runs = build_runs(seed, hours=hours, n_blocks_per_tier=n_blocks_per_tier)
+    samples = build_dataset([(run.stream_tier, run.output) for run in runs])
     return compute_entity_overlap(samples)
 
 
@@ -197,6 +199,100 @@ def _make_provenance(model_version: str) -> RunProvenance:
         model_version=model_version, config_hash=config_hash(),
         policy_version=DEFAULT_POLICY_VERSION, eval_prevalence=load_cost_model().eval_prevalence,
     )
+
+
+# ---------------------------------------------------------------------------
+# Source: Day-5 Plan Step 11 (Block 5) -- calibration evidence at both regimes.
+# math-only local copies of sigmoid / prior_correct so eval/harness.py stays
+# numpy-free (the Calibrator/Layer1Model objects are passed in already built).
+# ---------------------------------------------------------------------------
+
+_EPS = 1e-6
+
+
+def _sigmoid(z: float) -> float:
+    if z >= 0:
+        return 1.0 / (1.0 + math.exp(-z))
+    e = math.exp(z)
+    return e / (1.0 + e)
+
+
+def _logit(p: float) -> float:
+    q = min(max(p, _EPS), 1.0 - _EPS)
+    return math.log(q / (1.0 - q))
+
+
+def _prior_correct(p_train: float, pi_t: float, pi_s: float) -> float:
+    return _sigmoid(_logit(p_train) + _logit(pi_s) - _logit(pi_t))
+
+
+def _calibration_block(
+    samples: Sequence[Sample], feature_corpus, model, calibrator, cost_model, *, n_bins: int,
+) -> Optional[dict]:
+    from eval.metrics import brier, ece, prevalence_weights, reliability_bins
+
+    pairs = [
+        (feature_corpus[(s.run_index, s.event_id)], s.is_attack)
+        for s in samples
+        if (s.run_index, s.event_id) in feature_corpus
+    ]
+    if not pairs:
+        return None
+    margins = [model.margin(fr.x) for fr, _ in pairs]
+    labels = [bool(lbl) for _, lbl in pairs]
+    a, b, pi_t = calibrator.a, calibrator.b, calibrator.pi_t
+    raw = [_sigmoid(m) for m in margins]
+    platt = [_sigmoid(a * m + b) for m in margins]
+    pi0 = cost_model.prior_steady_state
+    pi1 = cost_model.prior_under_attack
+    platt_pc0 = [_prior_correct(p, pi_t, pi0) for p in platt]
+    platt_pc1 = [_prior_correct(p, pi_t, pi1) for p in platt]
+    w0 = prevalence_weights(labels, pi0)
+    w1 = prevalence_weights(labels, pi1)
+
+    def _eff_n(w: Sequence[float]) -> float:
+        s1 = sum(w)
+        s2 = sum(x * x for x in w)
+        return (s1 * s1 / s2) if s2 > 0 else 0.0
+
+    def _regime(w, platt_pc) -> dict:
+        return {
+            "brier_raw": brier(raw, labels, weights=w),
+            "brier_platt": brier(platt, labels, weights=w),
+            "brier_platt_prior": brier(platt_pc, labels, weights=w),
+            "ece_platt": ece(platt, labels, n_bins=n_bins, weights=w),
+            "ece_platt_prior": ece(platt_pc, labels, n_bins=n_bins, weights=w),
+            "effective_n": _eff_n(w),
+        }
+
+    def _reliab(platt_pc, w) -> list:
+        return [
+            {"lo": rb.lo, "hi": rb.hi, "weight": rb.weight,
+             "mean_predicted": rb.mean_predicted, "observed_rate": rb.observed_rate}
+            for rb in reliability_bins(platt_pc, labels, n_bins=n_bins, weights=w)
+        ]
+
+    return {
+        "n": len(labels),
+        "pi_t": pi_t,
+        "n_bins": n_bins,
+        "raw_prevalence": sum(1 for lbl in labels if lbl) / len(labels),
+        "pi0": _regime(w0, platt_pc0),
+        "pi1": _regime(w1, platt_pc1),
+        "reliability_pi0": _reliab(platt_pc0, w0),
+        "reliability_pi1": _reliab(platt_pc1, w1),
+    }
+
+
+def _audit_summary(audit_block: dict) -> dict:
+    feats = audit_block.get("features", {})
+    return {
+        "max_univariate_auc": audit_block.get("max_univariate_auc"),
+        "n_features": len(feats),
+        "n_constant": sum(1 for v in feats.values() if v.get("constant")),
+        "n_flagged": sum(1 for v in feats.values() if v.get("flagged")),
+        "excluded": sorted(n for n, v in feats.items() if v.get("excluded")),
+    }
 
 
 @dataclass(frozen=True)
@@ -209,13 +305,20 @@ class BaselineSummary:
 
 @dataclass(frozen=True)
 class HarnessRun:
-    eval_reports: Dict[str, List[Report]]  # split.name -> one Report per sanity scorer
+    eval_reports: Dict[str, List[Report]]  # split.name -> one Report per scorer (sanity + Day-5 model/B0)
     temporal_train_n: int
     holdout_train_n: int
     negative_scenario_names: Tuple[str, ...]
     negative_splits: Dict[str, Split]  # scenario -> its Split (raw samples, for episode-FP grouping)
     baseline_summary: BaselineSummary
     seed: int
+    # Source: Day-5 Plan Steps 10/11 -- populated only when `run_all` is given a
+    # feature corpus + model. calibration_block feeds report Block 5 and the
+    # eval_run metrics JSON; audit_block feeds Block 3.
+    calibration_block: Optional[dict] = None
+    audit_block: Optional[dict] = None
+    model_version: Optional[str] = None
+    b0_present: bool = False
 
 
 def _baseline_summary(split: Split, seed: int) -> BaselineSummary:
@@ -248,8 +351,27 @@ def _baseline_summary(split: Split, seed: int) -> BaselineSummary:
     )
 
 
-def run_all(seed: int = 42) -> HarnessRun:
-    """One report per (eval split, sanity scorer) pair. `--split all`'s entry point."""
+MODEL_MODEL_VERSION = "l1-lgbm-v1"
+B0_MODEL_VERSION = "rules-only-v0"
+
+
+def run_all(
+    seed: int = 42,
+    *,
+    feature_corpus: Optional[dict] = None,
+    model=None,
+    calibrator=None,
+    audit_block: Optional[dict] = None,
+    policy_versions_available: Sequence[int] = DEFAULT_POLICY_VERSIONS_AVAILABLE,
+) -> HarnessRun:
+    """
+    One report per (eval split, scorer) pair. `--split all`'s entry point.
+
+    Day-5 Plan Step 10: when `feature_corpus` + `model` + `calibrator` are
+    supplied, the Layer-1 model (`l1-lgbm-v1`) and the live rules layer B0
+    (`rules-only-v0`) are evaluated alongside the four B3 sanity scorers on
+    `temporal_test` and `holdout_test`. `evaluate()` is not redesigned.
+    """
     cost_model = load_cost_model()
     samples = build_full_dataset(seed)
 
@@ -259,22 +381,68 @@ def run_all(seed: int = 42) -> HarnessRun:
     holdout_train = exclude_negative_controls(holdout_train)
     negative_splits = negative_control_splits(samples)
 
-    scorers = _build_sanity_scorers(seed)
+    sanity = _build_sanity_scorers(seed)
+    model_scorers: Dict[str, Tuple[str, object]] = {}
+    calibration_block: Optional[dict] = None
+    have_model = feature_corpus is not None and model is not None and calibrator is not None
+    if have_model:
+        from eval.scorers import B0RulesScorer, Layer1Scorer
+
+        pi_s = cost_model.prior_steady_state  # serving_prior("in_control", cost_model)
+        model_scorers = {
+            "l1_lgbm": (MODEL_MODEL_VERSION, Layer1Scorer(model, calibrator, feature_corpus, pi_s=pi_s)),
+            "b0_rules": (B0_MODEL_VERSION, B0RulesScorer(feature_corpus)),
+        }
+        calibration_block = _calibration_block(
+            temporal_test.samples, feature_corpus, model, calibrator, cost_model,
+            n_bins=calibrator.ece_bins,
+        )
+
     eval_reports: Dict[str, List[Report]] = {}
 
-    eval_splits: List[Split] = [temporal_test, holdout_test] + list(negative_splits.values())
-    for split in eval_splits:
-        reports = []
-        for _key, (model_version, scorer) in scorers.items():
+    for split in (temporal_test, holdout_test):
+        reports: List[Report] = []
+        for _key, (model_version, scorer) in {**sanity, **model_scorers}.items():
             provenance = _make_provenance(model_version)
-            reports.append(evaluate(split, scorer, cost_model, provenance))
+            reports.append(evaluate(
+                split, scorer, cost_model, provenance,
+                policy_versions_available=policy_versions_available,
+            ))
+        eval_reports[split.name] = reports
+
+    for split in negative_splits.values():
+        reports = []
+        for _key, (model_version, scorer) in sanity.items():
+            provenance = _make_provenance(model_version)
+            reports.append(evaluate(
+                split, scorer, cost_model, provenance,
+                policy_versions_available=policy_versions_available,
+            ))
         eval_reports[split.name] = reports
 
     return HarnessRun(
         eval_reports=eval_reports, temporal_train_n=temporal_train.n, holdout_train_n=holdout_train.n,
         negative_scenario_names=tuple(negative_splits.keys()), negative_splits=negative_splits,
         baseline_summary=_baseline_summary(temporal_test, seed), seed=seed,
+        calibration_block=calibration_block, audit_block=audit_block,
+        model_version=MODEL_MODEL_VERSION if have_model else None, b0_present=have_model,
     )
+
+
+def _load_model_bundle(model_dir: Path):
+    """(feature_corpus, model, calibrator, audit_block) -- model_dir side only.
+    Local imports so eval/harness.py stays free of packages.detect / numpy /
+    lightgbm on the Day-4 path."""
+    import json as _json
+
+    from packages.detect.calibrate import Calibrator
+    from packages.detect.model import Layer1Model
+
+    model = Layer1Model.load(model_dir)
+    calibrator = Calibrator.load(Path(model_dir) / "platt-v1.json")
+    audit_path = Path(model_dir) / "audit.json"
+    audit_block = _json.loads(audit_path.read_text(encoding="utf-8")) if audit_path.exists() else None
+    return model, calibrator, audit_block
 
 
 def main() -> None:
@@ -283,16 +451,87 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--seeds", type=int, default=1)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT_DIR)
+    parser.add_argument("--corpus-db", dest="corpus_db", type=Path, default=None)
+    parser.add_argument("--model-dir", dest="model_dir", type=Path, default=None)
+    parser.add_argument("--write-eval-run", dest="write_eval_run", action="store_true")
     args = parser.parse_args()
 
     from eval.report import render  # local import -- report.py imports harness.py's Report type
 
-    runs = [run_all(seed=args.seed + i) for i in range(max(1, args.seeds))]
+    feature_corpus = model = calibrator = audit_block = None
+    policy_versions: Sequence[int] = DEFAULT_POLICY_VERSIONS_AVAILABLE
+    if args.model_dir is not None:
+        if args.corpus_db is None:
+            raise SystemExit("--model-dir requires --corpus-db (the replay feature corpus)")
+        from eval.corpus import load_feature_corpus
+        from packages.storage.db import connect
+
+        conn = connect(args.corpus_db)
+        try:
+            feature_corpus = load_feature_corpus(conn)
+            rows = conn.execute("SELECT DISTINCT version FROM policy_config").fetchall()
+            discovered = tuple(sorted({int(r[0]) for r in rows}))
+        finally:
+            conn.close()
+        if discovered:
+            policy_versions = discovered
+        model, calibrator, audit_block = _load_model_bundle(args.model_dir)
+
+    runs = [
+        run_all(
+            seed=args.seed + i, feature_corpus=feature_corpus, model=model,
+            calibrator=calibrator, audit_block=audit_block,
+            policy_versions_available=policy_versions,
+        )
+        for i in range(max(1, args.seeds))
+    ]
 
     args.out.mkdir(parents=True, exist_ok=True)
     out_path = args.out / "report.md"
     render(runs, out_path=out_path, seeds_used=max(1, args.seeds), base_seed=args.seed)
     print(f"wrote {out_path}")
+
+    if args.write_eval_run:
+        if args.corpus_db is None:
+            raise SystemExit("--write-eval-run requires --corpus-db")
+        from eval.load import write_eval_run
+        from packages.storage.db import connect
+
+        cost_model = load_cost_model()
+        run = runs[0]
+        conn = connect(args.corpus_db)
+        written: List[Tuple[str, str, str]] = []
+        try:
+            for split_name, reports in run.eval_reports.items():
+                is_temporal = split_name == "temporal_test"
+                is_holdout = split_name.startswith("attack_shape_holdout") and split_name.endswith("test")
+                if not (is_temporal or is_holdout):
+                    continue
+                for report in reports:
+                    mv = report.provenance.model_version
+                    if mv == B0_MODEL_VERSION and not is_temporal:
+                        continue  # B0 row only for temporal_test
+                    if mv not in (MODEL_MODEL_VERSION, B0_MODEL_VERSION):
+                        continue
+                    cal_ver = "platt-v1" if mv == MODEL_MODEL_VERSION else "identity"
+                    extra: dict = {}
+                    if mv == MODEL_MODEL_VERSION and is_temporal:
+                        if run.calibration_block is not None:
+                            extra["calibration"] = run.calibration_block
+                        if run.audit_block is not None:
+                            extra["audit_summary"] = _audit_summary(run.audit_block)
+                    rid = write_eval_run(
+                        conn, report=report, seed=args.seed, model_version=mv,
+                        calibrator_version=cal_ver,
+                        prior_assumed=cost_model.prior_steady_state,
+                        artifacts_path=str(args.model_dir or args.out),
+                        extra_metrics=extra or None,
+                    )
+                    written.append((mv, report.split_name, rid))
+        finally:
+            conn.close()
+        for mv, sn, rid in written:
+            print(f"eval_run[{rid[:12]}] {mv} on {sn}")
 
 
 if __name__ == "__main__":

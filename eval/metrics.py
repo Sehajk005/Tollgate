@@ -262,3 +262,118 @@ def cost_over_operating_points(
         (fpr, tpr, cost_model.expected_cost_per_10k(tpr, fpr, pi, tier))
         for fpr, tpr in hull
     ]
+
+
+# ---------------------------------------------------------------------------
+# Source: Day-5 Plan Step 6 -- calibration statistics. Eval Protocol §2.3
+# requires "Reliability diagram + Brier + ECE, computed separately at each
+# regime prevalence". `prevalence_weights` is the analytic reweighting that
+# makes "at pi_1" mean something on a test split whose raw prevalence is
+# ~0.64 -- the same idea `ap_at_prevalence` already uses. Pure stdlib, so
+# eval/ stays dependency-clean. Degenerate input returns None, never 0.0.
+# ---------------------------------------------------------------------------
+
+
+def prevalence_weights(labels: Sequence[bool], pi_target: float) -> List[float]:
+    """
+    Per-sample weights that re-tilt an empirical split to prevalence
+    `pi_target`: w_pos = pi_target / pi_raw, w_neg = (1 - pi_target) /
+    (1 - pi_raw), then rescaled so sum(weights) == n. At pi_target == pi_raw
+    every weight is exactly 1.0. A single-class split cannot be reweighted --
+    all weights stay 1.0.
+    """
+    n = len(labels)
+    if n == 0:
+        return []
+    n_pos = sum(1 for lbl in labels if lbl)
+    pi_raw = n_pos / n
+    if pi_raw in (0.0, 1.0):
+        return [1.0] * n
+    w_pos = pi_target / pi_raw
+    w_neg = (1.0 - pi_target) / (1.0 - pi_raw)
+    raw = [w_pos if lbl else w_neg for lbl in labels]
+    total = sum(raw)
+    if total <= 0:
+        return [1.0] * n
+    scale = n / total
+    return [w * scale for w in raw]
+
+
+def brier(
+    scores: Sequence[float], labels: Sequence[bool], *, weights: Optional[Sequence[float]] = None,
+) -> Optional[float]:
+    """(Weighted) mean squared error between predicted probability and the 0/1
+    label. None on empty input -- never 0.0 standing in for "undefined"."""
+    n = len(scores)
+    if n == 0:
+        return None
+    w = list(weights) if weights is not None else [1.0] * n
+    denom = sum(w)
+    if denom <= 0:
+        return None
+    total = 0.0
+    for s, lbl, wi in zip(scores, labels, w):
+        y = 1.0 if lbl else 0.0
+        total += wi * (s - y) ** 2
+    return total / denom
+
+
+@dataclass(frozen=True)
+class ReliabilityBin:
+    lo: float
+    hi: float
+    weight: float                       # total sample weight in this bin
+    mean_predicted: Optional[float]     # None for an empty bin, never 0.0
+    observed_rate: Optional[float]
+
+
+def reliability_bins(
+    scores: Sequence[float], labels: Sequence[bool], *, n_bins: int,
+    weights: Optional[Sequence[float]] = None,
+) -> List[ReliabilityBin]:
+    """Equal-width probability bins on [0, 1]; `mean_predicted` / `observed_rate`
+    are weight-weighted, None for an empty bin."""
+    n = len(scores)
+    w = list(weights) if weights is not None else [1.0] * n
+    edges = [i / n_bins for i in range(n_bins + 1)]
+    acc = [[0.0, 0.0, 0.0] for _ in range(n_bins)]  # [weight, sum(w*pred), sum(w*obs)]
+    for s, lbl, wi in zip(scores, labels, w):
+        clipped = min(max(s, 0.0), 1.0)
+        idx = min(int(clipped * n_bins), n_bins - 1)
+        acc[idx][0] += wi
+        acc[idx][1] += wi * clipped
+        acc[idx][2] += wi * (1.0 if lbl else 0.0)
+    out: List[ReliabilityBin] = []
+    for i in range(n_bins):
+        bw = acc[i][0]
+        if bw > 0:
+            out.append(ReliabilityBin(
+                lo=edges[i], hi=edges[i + 1], weight=bw,
+                mean_predicted=acc[i][1] / bw, observed_rate=acc[i][2] / bw,
+            ))
+        else:
+            out.append(ReliabilityBin(
+                lo=edges[i], hi=edges[i + 1], weight=0.0, mean_predicted=None, observed_rate=None,
+            ))
+    return out
+
+
+def ece(
+    scores: Sequence[float], labels: Sequence[bool], *, n_bins: int,
+    weights: Optional[Sequence[float]] = None,
+) -> Optional[float]:
+    """Expected Calibration Error: sum over bins of (bin weight fraction) *
+    |mean_predicted - observed_rate|. None on empty input."""
+    n = len(scores)
+    if n == 0:
+        return None
+    w = list(weights) if weights is not None else [1.0] * n
+    total_w = sum(w)
+    if total_w <= 0:
+        return None
+    gap = 0.0
+    for b in reliability_bins(scores, labels, n_bins=n_bins, weights=w):
+        if b.weight <= 0 or b.mean_predicted is None or b.observed_rate is None:
+            continue
+        gap += (b.weight / total_w) * abs(b.mean_predicted - b.observed_rate)
+    return gap

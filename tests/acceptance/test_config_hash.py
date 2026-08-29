@@ -60,3 +60,32 @@ class TestConfigHash:
 
         assert hash_a != hash_b
         assert config_before == config_after
+
+    def test_features_yaml_is_covered_by_config_hash(self):
+        # Source: Day-5 Plan Step 1 -- config/features.yaml is a build input
+        # (model/audit/calibration knobs) and must be provenanced. Additive
+        # test; no existing assertion edited (§11/R2).
+        from eval.provenance import DEFAULT_CONFIG_PATHS
+
+        assert "config/features.yaml" in DEFAULT_CONFIG_PATHS
+
+    def test_editing_features_yaml_changes_the_config_hash(self, tmp_path):
+        # Source: Day-5 Plan Step 1 -- the audit threshold / model params /
+        # calibration flags in config/features.yaml participate in config_hash.
+        import eval.provenance as provenance
+        from eval.provenance import DEFAULT_CONFIG_PATHS
+
+        for rel in DEFAULT_CONFIG_PATHS:
+            src = provenance.REPO_ROOT / rel
+            dst = tmp_path / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+
+        before = config_hash(list(DEFAULT_CONFIG_PATHS), repo_root=tmp_path)
+        feats = tmp_path / "config" / "features.yaml"
+        feats.write_text(
+            feats.read_text(encoding="utf-8").replace("value: 0.95", "value: 0.90"),
+            encoding="utf-8",
+        )
+        after = config_hash(list(DEFAULT_CONFIG_PATHS), repo_root=tmp_path)
+        assert before != after

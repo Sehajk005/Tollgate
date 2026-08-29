@@ -452,6 +452,104 @@ Layer-2 harm metrics / incident-based reporting (Day 6), a theta-indexed cost cu
 
 ---
 
+## 13. [Day 5] Layer 1 -- corpus -> audit -> model -> calibrator -> eval_run
+
+Source: Day-5 Plan. Day 5 turns the Day-4 evaluation scaffold into a real detector without
+changing the decision rule: **score yes, decide no.**
+
+```
+python -m scripts.train_l1 --seed 42 --db data/corpus/tollgate.db --out models/ [--rebuild-corpus]
+  eval.corpus.build_runs(42)                                 eval/corpus.py  (seam S1)
+    -- THE single construction: the 12 sequentially-epoched tier blocks + 7
+       negative-control scenarios that eval/harness.build_full_dataset now
+       DELEGATES to. Each run carries identity: run_index, merchant_id
+       "m-eval-NN", stream_tier|scenario, epoch_ms.
+  eval.corpus.replay_corpus(runs, db_path, spool_dir)        eval/corpus.py  (seam S2)
+    -- per run, in run order:
+         seed merchant + policy_config v1 for m-eval-NN
+         fresh ScorerState (fresh InMemoryWindowStore; Redis MUST be off)
+         ReplayDriver(state, merchant_id).run(ReplayRequest(speed=0, epoch_ms=0),
+             stream=run.output.events)  -- the EXISTING injected-stream seam;
+             negative controls replay through the identical score_attempt path
+         spool.close(); Drainer.drain_from_start()  -> auth_attempt + attempt_score
+         eval.load.load_truth(conn, m-eval-NN, [(tier, output)])  -> episode_truth + attempt_label
+    -- one merchant per run fixes colliding event_ids (stream.py restarts at
+       e-0000000/run), overlapping negative-control timelines (no epoch_ms),
+       and per-run window isolation. ~10,122 attempts, 10,122 labels.
+  eval.corpus.load_feature_corpus(conn)                      eval/corpus.py  (seam S4)
+    -- auth_attempt JOIN attempt_score; json.loads(feature_snapshot) projected
+       by FEATURE_NAMES (the stored dict has 27 keys) with float() coercion,
+       raises on a missing key. Keyed (run_index, event_id) -> FeatureRow(x[24],
+       rule_score_raw = score_raw at decision time = B0).
+
+  samples = compute_entity_overlap(build_dataset(runs))       Sample.run_index (seam S3)
+  temporal_split(samples, 0.7) -> exclude_negative_controls -> stream_tier in {easy,medium}
+  three_way_temporal_slice(train): fit 70% / earlystop 15% / calib 15%, 30-min embargo
+
+  discriminability audit (Eval Protocol §4/V2)               scripts/train_l1.py::run_audit
+    -- univariate_auc(column_j, labels) over ALL 24 on the training set;
+       writes models/audit.json; EXITS NON-ZERO if a feature over
+       max_univariate_auc=0.95 is not already in config/features.yaml:audit.excluded.
+       Six features are excluded (Decision 64); 14 read constant 0.5 (Decision 43).
+
+  train_lgbm(fit, earlystop)                                 scripts/train_l1.py
+    -- objective=binary, num_boost_round=200, max_depth=6, num_threads=1,
+       deterministic=True, seed=42, scale_pos_weight = n_neg/n_pos of `fit`.
+       Pass 1: early stopping on a custom feval calling
+       eval.metrics.recall_at_fpr(scores, labels, cost_model.target_fpr).
+       That metric is 0.0 every round (earlystop n_neg << 1/target_fpr), so
+       pass 2 retrains without the callback and keeps all 200 trees (Decision 65).
+  fit_platt(calib_margins, calib_labels)                     packages/detect/calibrate.py
+    -- canonical Platt / Lin et al. Bayes-smoothed-target MLE (Decision 66);
+       a>0 or abort. pi_t = prevalence(calib).
+  models/l1-lgbm-v1.txt (booster, gitignored) + l1-lgbm-v1.json (ModelArtifact)
+         + platt-v1.json (Calibrator) + audit.json
+```
+
+```
+python -m eval.harness --split all --seed 42 \
+    --corpus-db data/corpus/tollgate.db --model-dir models/ --write-eval-run
+  main() loads Layer1Model + Calibrator + audit.json; discovers real
+    policy_config versions from --corpus-db (completes Decision 62's hand-off).
+  run_all(42, feature_corpus, model, calibrator, audit_block, policy_versions)
+    -- adds two Scorers to the existing (Sample) -> float protocol:       eval/scorers.py
+         Layer1Scorer(model, calibrator, features, pi_s = serving_prior("in_control"))
+           -> calibrator.apply(model.margin(x), pi_s)   [Platt then §3.2 prior correction]
+         B0RulesScorer(features) -> FeatureRow.rule_score_raw   [read, never recomputed]
+       on temporal_test + holdout_test only. evaluate() / Report / TierMetrics unchanged.
+    -- _calibration_block(temporal_test): Brier + ECE for {raw, Platt,
+       Platt+prior-correction} at pi0 and pi1 via prevalence_weights;
+       reliability at both regimes.                                        eval/harness.py
+  eval.report.render(runs) -> eval/outputs/report.md                       eval/report.py
+    Block 1: + l1-lgbm-v1 and B0 rows per tier + holdout row (sanity scorers unchanged)
+    Block 3: the real 24-row audit table (AUC + EXCLUDED/constant/ok marker)
+    Block 5: the real calibration tables at pi0 and pi1 + the ECE gap at pi1
+    Block 6: the real B0 row (ROC-AUC / AP / recall@target_fpr on temporal_test)
+    Blocks 2 & 4: unchanged (nri_traffic keeps its marker; no theta curve -- Decision 57)
+  eval.load.write_eval_run(conn, report, ...)                              eval/load.py
+    -- one eval_run row per (model_version, split): l1-lgbm-v1/temporal_test,
+       rules-only-v0/temporal_test, l1-lgbm-v1/holdout.
+       run_id = sha256(config_hash ‖ build_hash ‖ model_version ‖ split_name ‖ seed),
+       ON CONFLICT(run_id) DO UPDATE  -> idempotent re-runs.
+       metrics JSON carries per-tier breakdown + build_hash + calibration + audit summary
+       (no schema migration -- Decision 68).
+```
+
+**Live serving path** (`services/scorer/scoring.py::score_attempt`, Step 9): when `models/`
+holds an artifact, `ScorerState.build_default` guarded-loads `model` + `calibrator`
+(`deps.py::_load_model`, same pattern as the Redis fallback). Between rules and
+`apply_auto_ceiling`, and inside the `latency_ms` window:
+`margin, contribs = state.model.score_one(x)`; `score_raw = sigmoid(margin)`;
+`score_calibrated = calibrator.apply(margin, serving_prior("in_control", state))`;
+`top_contributors = top-k of contribs`; `model_version = "l1-lgbm-v1"`,
+`calibrator_version = "platt-v1"`, `prior_used = pi_s`, `regime = "in_control"`.
+**`decision = apply_auto_ceiling(evaluation.minimum_tier)` is unchanged** -- applying theta_T
+to the calibrated posterior is Day 6 (Decision 57); the R1-R3 tier floors hold
+unconditionally (Decision 17). With **no** artifact present the path is byte-identical to
+Day 4 -- the authorized rules-only fallback.
+
+---
+
 ## 10. What does NOT exist yet (explicitly deferred)
 
 - No `/v1/outcome` route (Day 7); `decline_rate_per_ip_5m`, `invalid_cvv_share_ip_5m`,
@@ -477,17 +575,21 @@ Layer-2 harm metrics / incident-based reporting (Day 6), a theta-indexed cost cu
 - `tests/fixtures/handmade_40.jsonl` (the independent human-authored oracle) has not been
   supplied yet; `tests/acceptance/test_handmade_40.py` xfails with a named reason until it is
   (Decisions.md decision 14 -- must not be generated by the implementation agent).
-- [Day 4] No model, no calibrator, no training corpus -- Day 4 evaluates only the four B3
-  sanity scorers (`eval/scorers.py`) plus the two window-driven baselines B1/B2
-  (`eval/baselines.py`). B0 (the live rules layer) is never recomputed offline; it is wired
-  into the harness on Day 5 once the replay corpus exists.
-- [Day 4] The discriminability audit's statistic (`eval/audit.py::univariate_auc`) ships, but
-  running it over real features does not -- it needs `feature_snapshot` rows from Day 5's
-  replay (TRD §6.4 bans recomputing features offline).
-- [Day 4] No theta-indexed cost curve, no "cost-optimal threshold," no currency-amount gap --
-  those presuppose a calibrated posterior (Day 5's calibrator, Day 6's cost reporting).
+- [Day 5 DONE] The `l1-lgbm-v1` LightGBM detector (`packages/detect/model.py`), the Platt
+  calibrator (`packages/detect/calibrate.py`), the persistent replay corpus
+  (`eval/corpus.py`), and B0 (read from `attempt_score.score_raw`) all exist and are wired
+  into `eval.harness` and the live `score_attempt` path (score yes, decide no). The
+  discriminability audit runs against real `feature_snapshot` rows (`scripts/train_l1.py`);
+  `eval.load.load_truth` is called per run by `replay_corpus`; `eval_run` has real per-tier
+  rows (`eval.load.write_eval_run`).
+- [Day 5] Six model features are EXCLUDED by the audit (Decision 64); the model runs on
+  4 live features and is weaker than B0 except on `hard` (where B0 fires 0/3). Reinstating
+  them needs the store-relative quantile transforms (Decision 16).
+- [Day 5] `apply_auto_ceiling` is unchanged -- the calibrated posterior is computed and
+  logged (`score_calibrated`, `prior_used`) but no `theta_T` is applied to it. No
+  theta-indexed cost curve, no "cost-optimal threshold," no currency-amount gap -- Block 4
+  and Decision 57 still defer those to Day 6.
 - [Day 4] `nri_traffic`'s control is inert: `bin_is_foreign_issued` is 0.0 for every attack-tier
   event today (no BIN metadata join, per the bullet above) -- `test_nri_control_tripwire.py`
-  fails the moment that changes while attack-side foreign share stays zero.
-- [Day 4] `eval/load.py::load_truth()` exists and is tested in isolation, but is not called by
-  `eval.harness.main()` -- there is no live replay/merchant DB flow for it to load against yet.
+  fails the moment that changes while attack-side foreign share stays zero. (Report Block 2
+  keeps the "inert" marker; Day-5 did not populate `bin_metadata`.)

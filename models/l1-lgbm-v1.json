@@ -1,0 +1,61 @@
+{
+  "best_iteration": 200,
+  "corpus": {
+    "build_hash": "823ea55649546c2511855fc928dd2230d63654b8ee8e4b0b371b6fadfbba59b1",
+    "config_hash": "0b5abdc78857a034c4169ab3781bb3027d5bbace9ca25564c225958f1d21c78d",
+    "feature_set_version": 1,
+    "n_runs": 19,
+    "seed": 42
+  },
+  "excluded_features": [
+    "attempts_per_ip_5m",
+    "attempts_per_ip_60s",
+    "attempts_per_ipua_5m",
+    "distinct_amounts_per_ip_5m",
+    "distinct_cards_per_bin_5m",
+    "distinct_ips_per_bin_5m"
+  ],
+  "feature_names": [
+    "attempts_per_ip_60s",
+    "attempts_per_ip_5m",
+    "attempts_per_ipua_5m",
+    "distinct_cards_per_ip_5m_q",
+    "distinct_cards_per_ipua_5m_q",
+    "distinct_bins_per_ip_5m",
+    "distinct_ips_per_bin_5m",
+    "distinct_cards_per_bin_5m",
+    "attempts_per_session",
+    "card_seen_24h",
+    "bin_hhi_5m",
+    "bin_entropy_5m",
+    "bin_is_foreign_issued",
+    "foreign_bin_share_5m",
+    "foreign_bin_share_sigma",
+    "amount_percentile_vs_store",
+    "distinct_amounts_per_ip_5m",
+    "store_volume_deviation_sigma",
+    "store_decline_rate_deviation_sigma",
+    "decline_rate_per_ip_5m",
+    "invalid_cvv_share_ip_5m",
+    "outcome_coverage_ratio",
+    "event_id_reuse_count",
+    "clock_skew_s"
+  ],
+  "model_version": "l1-lgbm-v1",
+  "n_train": 3044,
+  "n_train_pos": 2160,
+  "params": {
+    "deterministic": true,
+    "early_stopping": "unresolved -- validation recall@FPR=1e-3 was constant (0.0) over all 51 rounds (n_neg < 1/target_fpr on the embargoed earlystop slice); kept all 200 trees",
+    "force_row_wise": true,
+    "max_depth": 6,
+    "metric": "None",
+    "num_boost_round": 200,
+    "num_threads": 1,
+    "objective": "binary",
+    "scale_pos_weight": 0.40925925925925927,
+    "seed": 42,
+    "verbosity": -1
+  },
+  "pi_t": 0.7250755287009063
+}

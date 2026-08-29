@@ -34,8 +34,27 @@ from packages.clock.stopwatch import Stopwatch
 from packages.contracts.records import AttemptRecord, ScoreRecord
 from packages.contracts.wire import ScoreRequest, ScoreResponse
 from packages.detect.policy import apply_auto_ceiling
-from packages.features.compute import FeatureContext, classify_ua, compute_features, ipua_key
+from packages.features.compute import (
+    FEATURE_NAMES,
+    FeatureContext,
+    classify_ua,
+    compute_features,
+    ipua_key,
+)
 from services.scorer.deps import ScorerState
+
+# Source: config/features.yaml `top_contributors_k` (Day-5 Plan Step 1 -- the
+# value is provenanced there and covered by config_hash; this constant must
+# match it). Only used when a Layer-1 model is loaded.
+TOP_CONTRIBUTORS_K = 5
+
+
+def _top_k_contributors_json(contribs, k: int) -> str:
+    """The k feature slots (never the bias term) with the largest |contribution|,
+    as a JSON list -- written to attempt_score.top_contributors."""
+    feature_contribs = list(zip(FEATURE_NAMES, list(contribs)[: len(FEATURE_NAMES)]))
+    ranked = sorted(feature_contribs, key=lambda kv: abs(kv[1]), reverse=True)[:k]
+    return json.dumps([{"feature": name, "contribution": round(float(v), 6)} for name, v in ranked])
 
 
 async def score_attempt(
@@ -74,6 +93,35 @@ async def score_attempt(
     )
     features = compute_features(state.window_store, feature_ctx)
     evaluation = state.rules.evaluate_from_features(features)
+
+    # Source: Day-5 Plan Step 9 -- score yes, decide no. TRD §6.3's order is
+    # features -> rules -> model -> calibration + prior correction -> policy,
+    # and this runs INSIDE the latency_ms measurement stamped below. With no
+    # model artifact loaded (state.model is None) the block is skipped and the
+    # six score fields are exactly Day 4's -- the authorized rules-only fallback.
+    if state.model is not None and state.calibrator is not None:
+        # calibrate.py (and numpy) were already imported by deps._load_model.
+        from packages.detect.calibrate import serving_prior, sigmoid
+
+        model_input = [features.values[name] for name in FEATURE_NAMES]
+        margin, contribs = state.model.score_one(model_input)
+        pi_s = serving_prior("in_control", state)  # state carries .prior_steady_state
+        score_raw = sigmoid(margin)
+        score_calibrated = state.calibrator.apply(margin, pi_s)
+        top_contributors = _top_k_contributors_json(contribs, TOP_CONTRIBUTORS_K)
+        model_version = state.model.model_version
+        calibrator_version = state.calibrator.calibrator_version
+        prior_used = pi_s
+    else:
+        score_raw = state.rule_score(evaluation)
+        score_calibrated = score_raw
+        top_contributors = None
+        model_version = "rules-only-v0"
+        calibrator_version = "identity"
+        prior_used = state.prior_steady_state
+
+    # Decision 57 / Decision 17: applying theta_T to the calibrated posterior is
+    # Day 6; the R1-R3 tier floors hold unconditionally. Unchanged.
     decision = apply_auto_ceiling(evaluation.minimum_tier)
 
     latency_ms = active_stopwatch.elapsed_ms()
@@ -105,23 +153,22 @@ async def score_attempt(
     feature_snapshot = features.snapshot()
     feature_snapshot.update(evaluation.feature_snapshot)
 
-    score_value = state.rule_score(evaluation)
     score_record = ScoreRecord(
         attempt_uid=attempt_uid,
-        score_raw=score_value,
-        score_calibrated=score_value,
-        prior_used=state.prior_steady_state,
+        score_raw=score_raw,
+        score_calibrated=score_calibrated,
+        prior_used=prior_used,
         regime="in_control",
         decision=decision.value,
         tier_ladder="domestic",
         control_arm=False,
         shed=False,
-        model_version="rules-only-v0",
-        calibrator_version="identity",
+        model_version=model_version,
+        calibrator_version=calibrator_version,
         policy_version=state.policy_version,
         rules_fired=evaluation.fired_names,
         feature_snapshot=feature_snapshot,
-        top_contributors=None,
+        top_contributors=top_contributors,
         incident_id=None,
         latency_ms=latency_ms,
         scored_at=ingest_ms,

@@ -1,0 +1,33 @@
+{
+  "model_version": "l1-lgbm-v1",
+  "overall": {
+    "ap_at_eval_prevalence": 0.5226614483913653,
+    "ap_raw": 0.9453085415026754,
+    "n": 2125,
+    "n_positive": 1367,
+    "prevalence": 0.6432941176470588,
+    "roc_auc": 0.8893031752986433
+  },
+  "per_tier": {
+    "easy": {
+      "ap_raw": 0.789228046757773,
+      "n": 821,
+      "prevalence": 0.730816077953715,
+      "recall_at_target_fpr": 0.0
+    },
+    "hard": {
+      "ap_raw": 0.9348555087114371,
+      "n": 603,
+      "prevalence": 0.4759535655058043,
+      "recall_at_target_fpr": 0.7317073170731707
+    },
+    "medium": {
+      "ap_raw": 0.9975852859372561,
+      "n": 701,
+      "prevalence": 0.6847360912981455,
+      "recall_at_target_fpr": 0.9729166666666667
+    }
+  },
+  "seed": 42,
+  "split_name": "temporal_test"
+}

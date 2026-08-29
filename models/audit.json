@@ -1,0 +1,179 @@
+{
+  "features": {
+    "amount_percentile_vs_store": {
+      "constant": true,
+      "excluded": false,
+      "flagged": false,
+      "reason": "constant 0.0 -- un-fed slot, Decision 43",
+      "univariate_auc": 0.5
+    },
+    "attempts_per_ip_5m": {
+      "constant": false,
+      "excluded": true,
+      "flagged": true,
+      "reason": "same per-IP volume concentration as attempts_per_ip_60s, at the 5-minute window.",
+      "univariate_auc": 0.9949835204737165
+    },
+    "attempts_per_ip_60s": {
+      "constant": false,
+      "excluded": true,
+      "flagged": true,
+      "reason": "easy+medium card-testing bursts concentrate volume on 2-6 IPs over minutes, so per-IP rate is a near-perfect single-feature discriminator on the training tiers -- Eval Protocol \u00a74/V2 'likely simulator artifact'. Stays active in R1.",
+      "univariate_auc": 0.9958417127534774
+    },
+    "attempts_per_ipua_5m": {
+      "constant": false,
+      "excluded": true,
+      "flagged": true,
+      "reason": "per-(IP,UA) attempt volume -- the simulated attack drives one UA class per IP, so this tracks attempts_per_ip_5m almost exactly on the training tiers.",
+      "univariate_auc": 0.9949835204737165
+    },
+    "attempts_per_session": {
+      "constant": true,
+      "excluded": false,
+      "flagged": false,
+      "reason": "constant 0.0 -- un-fed slot, Decision 43",
+      "univariate_auc": 0.5
+    },
+    "bin_entropy_5m": {
+      "constant": false,
+      "excluded": false,
+      "flagged": false,
+      "reason": null,
+      "univariate_auc": 0.7112287721356348
+    },
+    "bin_hhi_5m": {
+      "constant": false,
+      "excluded": false,
+      "flagged": false,
+      "reason": null,
+      "univariate_auc": 0.28878426251792266
+    },
+    "bin_is_foreign_issued": {
+      "constant": true,
+      "excluded": false,
+      "flagged": false,
+      "reason": "constant 0.0 -- un-fed slot, Decision 43",
+      "univariate_auc": 0.5
+    },
+    "card_seen_24h": {
+      "constant": false,
+      "excluded": false,
+      "flagged": false,
+      "reason": null,
+      "univariate_auc": 0.22475071225071225
+    },
+    "clock_skew_s": {
+      "constant": true,
+      "excluded": false,
+      "flagged": false,
+      "reason": "constant 0.0 -- un-fed slot, Decision 43",
+      "univariate_auc": 0.5
+    },
+    "decline_rate_per_ip_5m": {
+      "constant": true,
+      "excluded": false,
+      "flagged": false,
+      "reason": "constant 0.0 -- un-fed slot, Decision 43",
+      "univariate_auc": 0.5
+    },
+    "distinct_amounts_per_ip_5m": {
+      "constant": false,
+      "excluded": true,
+      "flagged": true,
+      "reason": "the attack varies amount per probe from one IP while baseline customers repeat their own order value, so distinct amounts per IP separates the training tiers almost perfectly.",
+      "univariate_auc": 0.994816630355846
+    },
+    "distinct_bins_per_ip_5m": {
+      "constant": false,
+      "excluded": false,
+      "flagged": false,
+      "reason": null,
+      "univariate_auc": 0.7112670614304601
+    },
+    "distinct_cards_per_bin_5m": {
+      "constant": false,
+      "excluded": true,
+      "flagged": true,
+      "reason": "card enumeration within a small issuer pool is the attack's defining shape; near-perfect single-feature separation on the training tiers. Stays active in R3 (and B2 shares this statistic).",
+      "univariate_auc": 0.9975874252835037
+    },
+    "distinct_cards_per_ip_5m_q": {
+      "constant": true,
+      "excluded": false,
+      "flagged": false,
+      "reason": "constant 0.0 -- un-fed slot, Decision 43",
+      "univariate_auc": 0.5
+    },
+    "distinct_cards_per_ipua_5m_q": {
+      "constant": true,
+      "excluded": false,
+      "flagged": false,
+      "reason": "constant 0.0 -- un-fed slot, Decision 43",
+      "univariate_auc": 0.5
+    },
+    "distinct_ips_per_bin_5m": {
+      "constant": false,
+      "excluded": true,
+      "flagged": true,
+      "reason": "the attack draws from a small BIN pool (bin_pool_size 4), so distinct source IPs per BIN spikes sharply during an episode -- near-perfectly separable on easy+medium.",
+      "univariate_auc": 0.9897026236895518
+    },
+    "event_id_reuse_count": {
+      "constant": true,
+      "excluded": false,
+      "flagged": false,
+      "reason": "constant 0.0 -- un-fed slot, Decision 43",
+      "univariate_auc": 0.5
+    },
+    "foreign_bin_share_5m": {
+      "constant": true,
+      "excluded": false,
+      "flagged": false,
+      "reason": "constant 0.0 -- un-fed slot, Decision 43",
+      "univariate_auc": 0.5
+    },
+    "foreign_bin_share_sigma": {
+      "constant": true,
+      "excluded": false,
+      "flagged": false,
+      "reason": "constant 0.0 -- un-fed slot, Decision 43",
+      "univariate_auc": 0.5
+    },
+    "invalid_cvv_share_ip_5m": {
+      "constant": true,
+      "excluded": false,
+      "flagged": false,
+      "reason": "constant 0.0 -- un-fed slot, Decision 43",
+      "univariate_auc": 0.5
+    },
+    "outcome_coverage_ratio": {
+      "constant": true,
+      "excluded": false,
+      "flagged": false,
+      "reason": "constant 0.0 -- un-fed slot, Decision 43",
+      "univariate_auc": 0.5
+    },
+    "store_decline_rate_deviation_sigma": {
+      "constant": true,
+      "excluded": false,
+      "flagged": false,
+      "reason": "constant 0.0 -- un-fed slot, Decision 43",
+      "univariate_auc": 0.5
+    },
+    "store_volume_deviation_sigma": {
+      "constant": true,
+      "excluded": false,
+      "flagged": false,
+      "reason": "constant 0.0 -- un-fed slot, Decision 43",
+      "univariate_auc": 0.5
+    }
+  },
+  "max_univariate_auc": 0.95,
+  "statistic": "univariate_auc (Mann-Whitney) on the training set -- Eval Protocol \u00a74/V2",
+  "training_set": {
+    "n": 4566,
+    "n_positive": 3240,
+    "prevalence": 0.709592641261498
+  }
+}

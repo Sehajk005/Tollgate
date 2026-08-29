@@ -36,6 +36,10 @@ CONFIG_HASH_DOMAIN = b"tollgate-config-v1\x00"
 BUILD_HASH_DOMAIN = b"tollgate-build-v1\x00"
 DEFAULT_CONFIG_PATHS: tuple = (
     "config/cost_model.yaml", "config/rules.yaml", "config/attack_tiers.yaml", "config/store_profile.yaml",
+    # Source: Day-5 Plan Step 1 -- the model/audit/calibration knobs are a
+    # BUILD INPUT and must be provenanced. test_config_hash.py is fully
+    # relative, so this changes hash values but breaks no assertion.
+    "config/features.yaml",
 )
 BASELINE_PROFILE_SHA_PATH = REPO_ROOT / "data" / "baseline" / "online_retail_ii.profile.sha256"
 FIXTURE_SHA_PATH = REPO_ROOT / "tests" / "fixtures" / "golden.sha256"

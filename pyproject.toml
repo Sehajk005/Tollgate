@@ -20,6 +20,20 @@ dev = [
     # path) needs it and dev is the extras group the test suite runs under.
     "redis>=5.0",
     "pandas>=2.2",
+    # Source: Day-5 Plan Step 0 -- the Layer-1 detector and its acceptance
+    # tests need lightgbm + numpy; in dev so the suite can run. No
+    # scikit-learn, no imblearn (test_no_smote.py enforces this).
+    "lightgbm>=4.5",
+    "numpy>=1.26",
+]
+# Source: Day-5 Plan Step 0 -- LightGBM is specified (Impl Plan Day 5, TRD
+# §6.9 and stack table). It stays out of the base install so the rules-only
+# fallback (services/scorer with no models/ artifact) runs without a
+# compiled dependency. eval/ never imports lightgbm -- only
+# packages/detect/model.py and scripts/train_l1.py do.
+model = [
+    "lightgbm>=4.5",
+    "numpy>=1.26",
 ]
 # Source: Day-2 Plan Step 3 -- dev-only, used exactly once by
 # scripts/distill_baseline.py to produce the committed derived profile.

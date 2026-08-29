@@ -90,3 +90,86 @@ def client(scorer_state, tmp_workspace):
     with TestClient(app) as test_client:
         test_client.tollgate_api_key = api_key
         yield test_client
+
+
+# ---------------------------------------------------------------------------
+# Source: Day-5 Plan §7 / §9 -- shared build for the corpus/model-dependent
+# acceptance + characterization tests (1, 4, 5, 6, 7, 8, 9, 10 and the
+# bisection rung). Reuses the committed repo artifacts
+# (`data/corpus/tollgate.db` + `models/`) when present and loadable; otherwise
+# rebuilds them ONCE per session into a session tmp dir -- the booster `.txt`
+# and the corpus `.db` are gitignored (Day-5 Plan §8), so a fresh clone
+# rebuilds while a local run after `python -m scripts.train_l1` reuses.
+# In tests/conftest.py (not tests/acceptance/) so tests/characterization/ can
+# use it too.
+# ---------------------------------------------------------------------------
+
+_DAY5_SEED = 42
+_REPO_CORPUS_DB = REPO_ROOT / "data" / "corpus" / "tollgate.db"
+_REPO_MODEL_DIR = REPO_ROOT / "models"
+
+
+def _day5_corpus_usable(db_path: Path) -> bool:
+    if not db_path.exists():
+        return False
+    try:
+        from packages.storage.db import connect
+
+        conn = connect(db_path)
+        try:
+            n = conn.execute("SELECT COUNT(*) FROM attempt_score").fetchone()[0]
+            m = conn.execute("SELECT COUNT(*) FROM attempt_label").fetchone()[0]
+        finally:
+            conn.close()
+        return n > 0 and m > 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _day5_model_usable(model_dir: Path) -> bool:
+    try:
+        from packages.detect.model import artifact_exists
+
+        return (
+            artifact_exists(model_dir)
+            and (model_dir / "platt-v1.json").exists()
+            and (model_dir / "audit.json").exists()
+        )
+    except Exception:  # noqa: BLE001
+        return False
+
+
+@pytest.fixture(scope="session")
+def day5_seed() -> int:
+    return _DAY5_SEED
+
+
+@pytest.fixture(scope="session")
+def day5_corpus(tmp_path_factory) -> Path:
+    """Path to a replayed feature corpus DB (seed 42, the full build_runs layout)."""
+    if _day5_corpus_usable(_REPO_CORPUS_DB):
+        return _REPO_CORPUS_DB
+    from eval.corpus import build_runs, replay_corpus
+
+    work = tmp_path_factory.mktemp("day5_corpus")
+    db_path = work / "tollgate.db"
+    replay_corpus(build_runs(_DAY5_SEED), db_path=db_path, spool_dir=work / "spool", rebuild=True)
+    return db_path
+
+
+@pytest.fixture(scope="session")
+def day5_model(day5_corpus, tmp_path_factory) -> Path:
+    """Path to a models/ dir with l1-lgbm-v1.{txt,json}, platt-v1.json, audit.json."""
+    if day5_corpus == _REPO_CORPUS_DB and _day5_model_usable(_REPO_MODEL_DIR):
+        return _REPO_MODEL_DIR
+    import subprocess
+    import sys
+
+    out = tmp_path_factory.mktemp("day5_models")
+    result = subprocess.run(
+        [sys.executable, "-m", "scripts.train_l1", "--seed", str(_DAY5_SEED),
+         "--db", str(day5_corpus), "--out", str(out)],
+        cwd=REPO_ROOT, capture_output=True, text=True, timeout=900,
+    )
+    assert result.returncode == 0, f"train_l1 failed:\n{result.stdout}\n{result.stderr}"
+    return out
