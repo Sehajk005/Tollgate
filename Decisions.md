@@ -2571,3 +2571,228 @@ None — `eval/load.py`'s real DB wiring remains Day 5's stated job (Day-4 Plan 
 
 ### Implementation impact
 `eval/harness.py`, `eval/load.py`, `tests/acceptance/test_load_truth.py`.
+
+---
+
+## Gate F: Day 5 — "Layer 1" (28 August 2026)
+
+Decisions 63–69 were made while implementing the Day-5 plan (`l1-lgbm-v1` LightGBM
+detector, Platt calibrator, discriminability audit against real data, first real
+per-tier `eval_run` rows). Recorded per Impl Plan §7/§9.
+
+## Decision 63: `packages/detect/model.py` and `packages/detect/calibrate.py`, not top-level `detect/`
+
+### Context
+Day-5 Plan §11/R3: the plan's shorthand `detect/model.py` is not importable — `pyproject.toml`'s
+`[tool.setuptools.packages.find] include` is `packages*`/`services*`/`scripts*`/`eval*`, exactly the
+same fork Decision 28 resolved for `simulator/`.
+
+### Decision
+`packages/detect/model.py` (LightGBM wrapper) and `packages/detect/calibrate.py` (Platt + prior
+correction) live alongside `packages/detect/{rules,policy,threat_state}.py`. `packages/detect/__init__.py`
+stays empty; `lightgbm` is imported lazily inside `Layer1Model.load()/save()`, and both modules are
+imported by `services/scorer/deps.py` only through a guarded try/except when `models/` holds an artifact,
+so the rules-only serving path never needs a compiled dependency.
+
+### Alternatives considered
+A bare top-level `detect/` package (the plan's literal text) — rejected per Context: not installed, and
+would need an undiscussed `pyproject.toml` change.
+
+### Trade-off
+None — mirrors Decision 28.
+
+### Specification impact
+None.
+
+### Implementation impact
+`packages/detect/model.py`, `packages/detect/calibrate.py`, `services/scorer/deps.py`
+(`_load_model`, guarded), `tests/acceptance/test_detect_label_isolation.py`.
+
+---
+
+## Decision 64: Six features excluded by the discriminability audit (remedy (a) applied)
+
+### Context
+Day-5 Plan §11/R1 pre-committed remedy (a) (remove the feature) if a feature's univariate AUC on the
+training set exceeds `config/features.yaml: audit.max_univariate_auc` (0.95). The generator is locked
+(Decision 51, `tests/fixtures/golden.sha256`), so remedy (b) (fix the generator) is off the table for
+Day 5.
+
+### Decision
+On the seed-42 easy+medium temporal-train set, six features exceed 0.95 and are listed in
+`config/features.yaml: audit.excluded` with their measured AUC and a reason:
+`attempts_per_ip_60s` (0.9958), `attempts_per_ip_5m` (0.9950), `attempts_per_ipua_5m` (0.9950),
+`distinct_ips_per_bin_5m` (0.9897), `distinct_cards_per_bin_5m` (0.9976),
+`distinct_amounts_per_ip_5m` (0.9948). They are **zeroed on model input** (never reshaped — the
+24-wide vector and `pred_contrib`'s bias term stay aligned) and published as `EXCLUDED` in report
+Block 3. They **remain active in the R1/R3 deterministic rule floors** (Decision 17) and in B0 — the
+audit governs learned model features, not the rule floors. `scripts/train_l1` exits non-zero if any
+feature over threshold is not already in `audit.excluded`.
+
+### Reasoning
+easy+medium card-testing bursts concentrate volume on 2–6 IPs / a 4-BIN pool over minutes, so per-IP
+rate / fan-out counts are near-perfect single-feature discriminators on the training tiers — Eval
+Protocol §4/V2's "likely a simulator artifact" case.
+
+### Trade-off
+**Accepted, stated in the report:** with 6 of ~10 non-constant features removed and 14 constant `0.0`
+un-fed slots (Decision 43), the model runs on 4 live features (`distinct_bins_per_ip_5m`,
+`card_seen_24h`, `bin_hhi_5m`, `bin_entropy_5m`). It is weaker than B0 overall (temporal_test ROC-AUC
+0.889 vs 0.994) and on easy, but competitive on medium (0.995) and **decisively better on `hard`,
+where B0 fires 0/3 rules** (recall@1e-3 0.73 vs 0.13). Reported "in exactly that form" (Eval Protocol
+§8). The excluded features can be reinstated once the store-relative quantile transforms land
+(Decision 16).
+
+### Specification impact
+Fills `config/features.yaml: audit.excluded` (Eval Protocol §4/V2's remedy path).
+
+### Implementation impact
+`config/features.yaml`, `scripts/train_l1.py` (`run_audit`), `eval/report.py` (Block 3),
+`tests/acceptance/test_discriminability_audit.py`.
+
+---
+
+## Decision 65: When the early-stopping metric is unresolvable, keep all `num_boost_round` trees
+
+### Context
+TRD §6.9 mandates early stopping on validation `recall@FPR=1e-3` with `num_boost_round=200`. After the
+Decision-64 exclusions, the embargoed 15% `earlystop` slice has ~224 negatives — far below the
+`1/target_fpr = 1000` needed to resolve FPR = 1e-3 — so `recall@FPR=1e-3` is 0.0 on every boosting
+round. LightGBM's early stopping then rolls the booster back to iteration 1 (a single tree).
+
+### Decision
+`scripts/train_l1.train_lgbm` runs the spec-exact early-stopping pass first. If the recorded
+`recall@FPR=1e-3` trajectory has more than one distinct value (the metric resolved), the early-stopped
+booster and its `best_iteration` are kept. If the trajectory is constant (unresolvable), it retrains
+without the callback and keeps all `num_boost_round` trees, recording
+`params.early_stopping = "unresolved -- ... kept all 200 trees"`. `Layer1Model` serves exactly
+`artifact.best_iteration` trees.
+
+### Alternatives considered
+Shipping the 1-tree stump (spec-literal but a degenerate model); substituting a resolvable metric for
+the feval (deviates from TRD §6.9's named metric).
+
+### Reasoning
+TRD §6.9 asks for "~200 trees" *and* early stopping on that metric; when the metric carries no signal,
+honouring the tree count while recording that early stopping was inert is the faithful reading.
+
+### Trade-off
+Stated in the report's Block 1 note and in the model artifact.
+
+### Specification impact
+None.
+
+### Implementation impact
+`scripts/train_l1.py` (`train_lgbm`), `packages/detect/model.py` (`Layer1Model` predicts at
+`best_iteration`).
+
+---
+
+## Decision 66: `fit_platt` uses Lin et al. Bayes-smoothed targets (canonical Platt scaling)
+
+### Context
+Day-5 Plan §5: "unregularized two-parameter sigmoid MLE ... No sklearn (its default L2 penalty is a
+hyperparameter no spec section fixes)." A plain MLE `fit_platt` over-sharpened on the small (~660-row)
+held-out `calib` slice — `a ≈ 5.3`, Platt Brier on `temporal_test` *worse* than raw.
+
+### Decision
+`fit_platt` implements the canonical Platt scaling of Lin, Lin & Weng (2007): Newton with a damped
+line search, MLE on the Bayes-smoothed targets `t_+ = (N_+ + 1)/(N_+ + 2)`, `t_- = 1/(N_- + 2)`. The
+smoothing regularises the fit **without an L2 penalty on `(a, b)`** — it is part of the textbook
+"Platt scaling" algorithm, not a hyperparameter. A non-positive or non-finite `a` still aborts the run.
+
+### Reasoning
+Target smoothing is the standard, spec-consistent way to make the two-parameter MLE well-posed on a
+small calibration set; the result (`a ≈ 1.04`, `b ≈ -1.83`) is a sensible near-identity slope.
+
+### Trade-off
+The raw GBM `sigmoid(margin)` is accidentally near-calibrated at the corpus's ~0.64 prevalence, so
+Platt beats raw at the serving prior `pi0` (Brier 0.011 vs 0.119) and on the `calib` slice, but not
+unweighted on `temporal_test`. See Decision 67.
+
+### Specification impact
+None — Eval Protocol §3.1 says "Platt".
+
+### Implementation impact
+`packages/detect/calibrate.py` (`fit_platt`), `tests/acceptance/test_calibration.py`.
+
+---
+
+## Decision 67: Calibration criteria — Brier at `pi0`, ECE at `pi1`
+
+### Context
+Report Block 5 computes Brier and ECE for {raw, Platt, Platt+prior-correction} separately at `pi0` and
+`pi1` by reweighting `temporal_test`. `pi0 = 0.001` reweighting is extreme (effective n ≈ 760 of 2125);
+`pi1 = 0.9` is well-conditioned (Day-5 Plan §11/R5). The raw GBM output is near-calibrated at the
+corpus's raw prevalence, so an unweighted "Platt Brier < raw Brier" does not hold on the full split.
+
+### Decision
+The pass/fail calibration criteria are: **Brier improvement at `pi0`** (the `in_control` serving
+regime Day-5's live path always uses) and **prior-corrected ECE < uncorrected ECE at `pi1`** (§11/R5's
+explicitly-named well-conditioned criterion), plus every calibrated output in [0, 1] (fuzzed over
+extreme margins) and reliability observed-rate non-decreasing at both regimes. `test_calibration.py`
+also asserts Platt beats raw Brier unweighted on the `calib` slice Platt was fit on. Block 5 states
+the effective sample size at `pi0` so no reader mistakes its Brier for a well-conditioned number.
+
+### Alternatives considered
+Asserting "Platt Brier < raw Brier" unweighted on `temporal_test` — it does not hold, because raw is
+accidentally near-calibrated at ~0.64 prevalence; asserting it there would be asserting a false thing.
+
+### Specification impact
+None — implements Eval Protocol §2.3 / §3.2 and §11/R5.
+
+### Implementation impact
+`eval/harness.py` (`_calibration_block`), `eval/report.py` (Block 5),
+`tests/acceptance/test_calibration.py`.
+
+---
+
+## Decision 68: `eval_run.run_id`, metrics-JSON payload, and `config/features.yaml` coverage
+
+### Context
+`eval_run` (schema.sql, zero rows since Day 1) has columns for provenance and a `metrics TEXT` blob
+but none for `build_hash`, the calibration block, or the audit summary. Decision 62 deferred real
+`policy_config`-version discovery to Day 5.
+
+### Decision
+`eval/load.write_eval_run`: `run_id = sha256(config_hash ‖ build_hash ‖ model_version ‖ split_name ‖
+seed)`, written with `INSERT ... ON CONFLICT(run_id) DO UPDATE` (idempotent, matching `load_truth`).
+`build_hash`, the per-tier breakdown, the calibration block and the audit summary all live inside the
+`metrics` JSON — **no schema migration**. `config/features.yaml` is added as the 5th path in
+`eval/provenance.DEFAULT_CONFIG_PATHS` so every Day-5 knob is provenanced (`test_config_hash.py` is
+fully relative — hash values change, no assertion breaks). When `eval.harness` is given `--corpus-db`,
+it discovers the real `policy_config` versions from that DB instead of the `(1,)` placeholder,
+completing Decision 62's hand-off.
+
+### Specification impact
+None — implements Eval Protocol §9.
+
+### Implementation impact
+`eval/load.py` (`write_eval_run`), `eval/harness.py` (`main` flags, policy-version discovery),
+`eval/provenance.py` (one path), `config/features.yaml` (new),
+`tests/acceptance/test_eval_run_row.py`, `tests/acceptance/test_config_hash.py` (additive test).
+
+---
+
+## Decision 69: `eval/corpus.py` bridges to the scoring core; `eval/` still imports no lightgbm
+
+### Context
+Day-5 Plan Step 2: `eval/corpus.replay_corpus` must drive the identical `score_attempt` path to
+produce the `feature_snapshot` corpus, which means `eval/` reaches into `services/scorer/*`. The Day-4
+README says "`eval/` is pure stdlib + pyyaml".
+
+### Decision
+`eval/corpus.py` imports `services.scorer.{deps,replay}` and `packages.storage.*` **lazily, inside
+`replay_corpus`'s per-run helper** — `build_runs` and `load_feature_corpus` stay import-light.
+`eval/harness.py` and `eval/scorers.py` still import **no** `packages.detect.*` and **no** lightgbm:
+the model and calibrator are constructed by `eval.harness.main` (only under `--model-dir`) and passed
+into `run_all` / `Layer1Scorer` as duck-typed objects. The Day-4 sanity-scorer path is unchanged and
+still runs with no extras. README's "pure stdlib + pyyaml" line is updated to note the Day-5
+`--model-dir` path.
+
+### Specification impact
+README wording (Day-5 Plan §R4: "If that ever stops being true, the README sentence changes in the
+same commit").
+
+### Implementation impact
+`eval/corpus.py`, `eval/harness.py`, `eval/scorers.py`, `README.md`.

@@ -24,6 +24,15 @@ data/baseline/*.xlsx
 eval/outputs/*
 !eval/outputs/.gitkeep
 
+# Day-5 model artifacts (Day-5 Plan §8): the LightGBM booster is regenerated
+# by `python -m scripts.train_l1`; only the JSON artifacts (ModelArtifact,
+# Calibrator, audit) are committed.
+models/*.txt
+models/*.db
+# Day-5 replay corpus DB (`python -m scripts.train_l1 --rebuild-corpus`);
+# also matched by the *.db rule above, listed here for discoverability.
+data/corpus/
+
 # Node
 node_modules/
 dist/

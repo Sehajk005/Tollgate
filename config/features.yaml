@@ -1,0 +1,89 @@
+# Source: Day-5 Plan Step 1 -- every Day-5 knob the source documents specify
+# quotes its section; every knob they do NOT specify is declared here with an
+# explicit "not fixed by any spec section" source, so it is provenanced
+# rather than buried in code. learning_rate / num_leaves / min_data_in_leaf
+# etc. are DELIBERATELY ABSENT -- LightGBM defaults are used and recorded
+# verbatim into models/l1-lgbm-v1.json (ModelArtifact.params).
+#
+# Leaves follow config/attack_tiers.yaml's {value, unit, source} shape.
+# This file is covered by eval/provenance.py::config_hash (Day-5 Plan Step 1);
+# tests/acceptance/test_config_hash.py is fully relative, so adding it changes
+# hash VALUES but breaks no assertion.
+
+feature_set_version:
+  value: 1
+  unit: integer
+  source: "TRD §6.8 -- the 24-name FEATURE_NAMES contract"
+
+audit:
+  max_univariate_auc:
+    value: 0.95
+    unit: auc
+    source: "Eval Protocol §4/V2 -- single-feature discriminability flag threshold"
+  # Features removed by remedy (a) (Day-5 Plan §11/R1). Each entry carries a
+  # `reason:` and its measured univariate AUC on the training set (seed 42,
+  # easy+medium temporal-train). The audit governs MODEL features only -- an
+  # excluded feature stays active in the R1/R3 deterministic rule floors
+  # (Decision 17) and B0. Eval Protocol §4/V2 allows remedy (a) remove or
+  # (b) fix the generator, never (c) keep quietly; the generator is locked
+  # (Decision 51, tests/fixtures/golden.sha256), so (a).
+  excluded:
+    - name: attempts_per_ip_60s
+      measured_auc: 0.9958
+      reason: "easy+medium card-testing bursts concentrate volume on 2-6 IPs over minutes, so per-IP rate is a near-perfect single-feature discriminator on the training tiers -- Eval Protocol §4/V2 'likely simulator artifact'. Stays active in R1."
+    - name: attempts_per_ip_5m
+      measured_auc: 0.9950
+      reason: "same per-IP volume concentration as attempts_per_ip_60s, at the 5-minute window."
+    - name: attempts_per_ipua_5m
+      measured_auc: 0.9950
+      reason: "per-(IP,UA) attempt volume -- the simulated attack drives one UA class per IP, so this tracks attempts_per_ip_5m almost exactly on the training tiers."
+    - name: distinct_ips_per_bin_5m
+      measured_auc: 0.9897
+      reason: "the attack draws from a small BIN pool (bin_pool_size 4), so distinct source IPs per BIN spikes sharply during an episode -- near-perfectly separable on easy+medium."
+    - name: distinct_cards_per_bin_5m
+      measured_auc: 0.9976
+      reason: "card enumeration within a small issuer pool is the attack's defining shape; near-perfect single-feature separation on the training tiers. Stays active in R3 (and B2 shares this statistic)."
+    - name: distinct_amounts_per_ip_5m
+      measured_auc: 0.9948
+      reason: "the attack varies amount per probe from one IP while baseline customers repeat their own order value, so distinct amounts per IP separates the training tiers almost perfectly."
+
+model:
+  num_boost_round:
+    value: 200
+    unit: trees
+    source: "TRD §6.9 -- '~200 trees'"
+  max_depth:
+    value: 6
+    unit: depth
+    source: "TRD §6.9 -- 'depth 6'"
+  early_stopping_metric:
+    value: "recall_at_fpr"
+    unit: enum
+    source: "TRD §6.9 -- 'early stopping on validation recall@FPR=1e-3'"
+  seed:
+    value: 42
+    unit: integer
+    source: "Eval Protocol §9 -- every number reproducible from --seed"
+  num_threads:
+    value: 1
+    unit: threads
+    source: "Impl Plan Day 5 -- p99 < 5 ms is a single-call budget"
+
+calibration:
+  method:
+    value: "platt"
+    unit: enum
+    source: "Eval Protocol §3.1"
+  isotonic_enabled:
+    value: false
+    unit: bool
+    source: "Eval Protocol §3.1 -- 'kept behind a config flag for comparison'"
+  ece_bins:
+    value: 10
+    unit: bins
+    source: "not fixed by any spec section; recorded here so it is provenanced, not invented in code"
+
+top_contributors_k:
+  value: 5
+  unit: count
+  source: "not fixed by any spec section; recorded here so it is provenanced, not invented in code"

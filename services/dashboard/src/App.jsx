@@ -47,7 +47,7 @@ function Tile({ label, value, caption }) {
 const TIER_OPTIONS = [
   { value: "easy", label: "easy", enabled: true, note: null },
   { value: "hard", label: "hard", enabled: true, note: null },
-  { value: "medium", label: "medium", enabled: false, note: "Day 4" },
+  { value: "medium", label: "medium", enabled: true, note: null },
   { value: "evasive", label: "evasive", enabled: false, note: "Day 7" },
 ];
 
