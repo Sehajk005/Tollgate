@@ -234,6 +234,25 @@ def insert_enforcement_action(conn: sqlite3.Connection, row: dict) -> None:
     )
 
 
+def insert_narrator_call(conn: sqlite3.Connection, row: dict) -> None:
+    """Source: Day-8 Plan Step 9 -- ONE row per narration ATTEMPT (every
+    dispatch, successful or failed). `call_id` is the PK, so `INSERT OR IGNORE`
+    keeps the drainer's byte-0 re-drain idempotent. `narrator_call.incident_id`
+    is NOT NULL (schema.sql:232), which is why the reading is per-narration-
+    attempt, not per-scored-attempt -- recorded in Decisions.md."""
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO narrator_call (
+            call_id, incident_id, backend, requested_at, status, latency_ms, fallback_used
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            row["call_id"], row["incident_id"], row["backend"], row["requested_at"],
+            row["status"], row.get("latency_ms"), int(bool(row.get("fallback_used"))),
+        ),
+    )
+
+
 def read_active_enforcement_count(conn: sqlite3.Connection, merchant_id: str) -> int:
     """Distinct (entity_type, entity_key) with an unreleased enforcement_action
     -- the K_max blast-radius count (Threat Model §4/P2). Not on the hot path:
@@ -287,6 +306,219 @@ def load_policy_config(
         control_fraction=float(row["control_fraction"]),
         rules_config=json.loads(row["rules_config"] or "{}"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Day-8 Plan Step 6 -- D3 incident read model + confirm / resolve writers.
+#
+# The read model recomputes NOTHING: every field already exists in SQLite. The
+# two writes are direct (not spooled): the spool exists to protect the SCORING
+# path's durability, and a synchronous operator action must be visible on the
+# next read, not 50 ms later. Timestamps are integer epoch ms (the repo
+# convention -- `auth_attempt.ingest_time`, `eval_run.created_at`).
+# ---------------------------------------------------------------------------
+
+# entity_type -> the auth_attempt column its entity_key matches, for the
+# newest-client-evidence lookup (Day-6 Plan §3.5 entity scoping).
+_ENTITY_MATCH_COL = {"ip": "ip", "ipua": "ipua_key", "bin": "bin", "card": "card_hash"}
+
+
+def _truncate_key(entity_type: str, entity_key: str) -> str:
+    """UIUX v2 §6.8 -- pseudonyms PLUS a truncated real key; never a PAN, never
+    a full card hash. An `ip` / `bin` key is short and shown as-is; a `card`
+    (or any long) key is truncated to 8 chars + ellipsis."""
+    if entity_type in ("ip", "bin") and len(entity_key) <= 18:
+        return entity_key
+    return entity_key[:8] + "…" if len(entity_key) > 8 else entity_key
+
+
+def read_open_incidents(conn: sqlite3.Connection, merchant_id: str) -> list:
+    """Newest-first live (non-CLOSED) incidents for the merchant -- drives the
+    nav's Incidents item (which routes straight to D3 for the newest)."""
+    rows = conn.execute(
+        """
+        SELECT incident_id, state, detector, opened_at, peak_tier
+        FROM incident
+        WHERE merchant_id = ? AND state != 'CLOSED'
+        ORDER BY opened_at DESC
+        """,
+        (merchant_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def read_incident_detail(
+    conn: sqlite3.Connection, incident_id: str, *, merchant_id: Optional[str] = None
+) -> Optional[dict]:
+    """The full D3 read model for one incident. Returns None when the incident
+    does not exist (or does not belong to `merchant_id`, when given)."""
+    inc = conn.execute(
+        "SELECT * FROM incident WHERE incident_id = ?", (incident_id,)
+    ).fetchone()
+    if inc is None:
+        return None
+    if merchant_id is not None and inc["merchant_id"] != merchant_id:
+        return None
+    inc = dict(inc)
+
+    entity_rows = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT entity_type, entity_key, pseudonym, attempt_count, first_seen, last_seen "
+            "FROM incident_entity WHERE incident_id = ?",
+            (incident_id,),
+        ).fetchall()
+    ]
+    entities = [
+        {
+            "pseudonym": r["pseudonym"],
+            "entity_type": r["entity_type"],
+            "entity_key_truncated": _truncate_key(r["entity_type"], r["entity_key"]),
+            "attempt_count": r["attempt_count"],
+            "first_seen": r["first_seen"],
+            "last_seen": r["last_seen"],
+        }
+        for r in entity_rows
+    ]
+
+    transitions = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT from_tier, to_tier, trigger, signal_value, at "
+            "FROM tier_transition WHERE incident_id = ? ORDER BY at ASC, transition_id ASC",
+            (incident_id,),
+        ).fetchall()
+    ]
+
+    actions = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT action_id, entity_type, entity_key, tier, requires_confirmation, "
+            "confirmed_by, applied_at, expires_at, released_at, applied_by "
+            "FROM enforcement_action WHERE incident_id = ? ORDER BY tier",
+            (incident_id,),
+        ).fetchall()
+    ]
+    for a in actions:
+        a["entity_key_truncated"] = _truncate_key(a["entity_type"], a.pop("entity_key"))
+
+    contrib_row = conn.execute(
+        "SELECT top_contributors FROM attempt_score "
+        "WHERE incident_id = ? AND top_contributors IS NOT NULL "
+        "ORDER BY scored_at DESC LIMIT 1",
+        (incident_id,),
+    ).fetchone()
+    try:
+        top_contributors = json.loads(contrib_row["top_contributors"]) if contrib_row else []
+    except (TypeError, ValueError):
+        top_contributors = []
+
+    # proposed vs in-force (Day-6 Plan §3.6 / App Flow §5 D3). `peak_tier` is
+    # the proposed peak (may exceed the auto-ceiling); the in-force tier is the
+    # most recent decision actually applied to an attempt on this incident.
+    inforce_row = conn.execute(
+        "SELECT decision FROM attempt_score WHERE incident_id = ? "
+        "ORDER BY scored_at DESC LIMIT 1",
+        (incident_id,),
+    ).fetchone()
+    in_force_tier = inforce_row["decision"] if inforce_row else "challenge"
+
+    # newest client-asserted evidence from an attempt on this incident's entity
+    client_evidence = None
+    for r in entity_rows:
+        col = _ENTITY_MATCH_COL.get(r["entity_type"])
+        if col is None:
+            continue
+        ev = conn.execute(
+            f"SELECT client_evidence, ingest_time FROM auth_attempt "  # noqa: S608 -- col from a fixed allowlist
+            f"WHERE {col} = ? ORDER BY ingest_time DESC LIMIT 1",
+            (r["entity_key"],),
+        ).fetchone()
+        if ev is not None and ev["client_evidence"]:
+            try:
+                blob = json.loads(ev["client_evidence"])
+            except (TypeError, ValueError):
+                blob = {}
+            ua = str(blob.get("user_agent", ""))[:60]  # inert text, 60-char cap (§6.9)
+            client_evidence = {"user_agent": ua, "observed_at": ev["ingest_time"]}
+            break
+
+    return {
+        "incident": {
+            "incident_id": inc["incident_id"],
+            "state": inc["state"],
+            "detector": inc["detector"],
+            "opened_at": inc["opened_at"],
+            "escalated_at": inc["escalated_at"],
+            "cooling_at": inc["cooling_at"],
+            "closed_at": inc["closed_at"],
+            "peak_tier": inc["peak_tier"],
+            "proposed_tier": inc["peak_tier"],
+            "in_force_tier": in_force_tier,
+            "attempts_total": inc["attempts_total"],
+            "attempts_before_alert": inc["attempts_before_alert"],
+            "cards_exposed_before_alert": inc["cards_exposed_before_alert"],
+            "time_to_detect_s": inc["time_to_detect_s"],
+            "narrative": inc["narrative"],
+            "resolution": inc["resolution"],
+            "resolved_by": inc["resolved_by"],
+            "pinned_policy_version": inc["pinned_policy_version"],
+        },
+        "entities": entities,
+        "timeline": transitions,
+        "enforcement": actions,
+        "contributions": top_contributors,
+        "client_evidence": client_evidence,
+    }
+
+
+def confirm_enforcement_action(
+    conn: sqlite3.Connection, action_id: str, confirmed_by: str, applied_at: int
+) -> int:
+    """UPDATE (not INSERT OR IGNORE -- `insert_enforcement_action` structurally
+    cannot express a confirmation). Flips `requires_confirmation -> 0` and
+    records who/when. Returns the number of rows changed (0 if unknown)."""
+    cur = conn.execute(
+        "UPDATE enforcement_action "
+        "SET requires_confirmation = 0, confirmed_by = ?, applied_at = ? "
+        "WHERE action_id = ?",
+        (confirmed_by, applied_at, action_id),
+    )
+    conn.commit()
+    return cur.rowcount
+
+
+def release_enforcement_for_incident(
+    conn: sqlite3.Connection, incident_id: str, released_at: int
+) -> int:
+    """Mark every still-active enforcement row for the incident released. This
+    is App Flow J4 -- "enforcement released immediately"."""
+    cur = conn.execute(
+        "UPDATE enforcement_action SET released_at = ? "
+        "WHERE incident_id = ? AND released_at IS NULL",
+        (released_at, incident_id),
+    )
+    conn.commit()
+    return cur.rowcount
+
+
+def resolve_incident(
+    conn: sqlite3.Connection,
+    incident_id: str,
+    resolution: str,
+    resolved_by: str,
+    closed_at: int,
+) -> int:
+    """Close the incident with an operator resolution (App Flow J4). CLOSED is
+    terminal in the state machine; this is the operator-driven path to it."""
+    cur = conn.execute(
+        "UPDATE incident "
+        "SET resolution = ?, resolved_by = ?, closed_at = ?, state = 'CLOSED' "
+        "WHERE incident_id = ?",
+        (resolution, resolved_by, closed_at, incident_id),
+    )
+    conn.commit()
+    return cur.rowcount
 
 
 def load_store_baseline(conn: sqlite3.Connection, merchant_id: str) -> Optional[StoreBaseline]:

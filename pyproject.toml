@@ -8,12 +8,16 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "pydantic>=2.7",
     "pyyaml>=6.0",
+    # Source: Day-8 Plan Step 9 -- the Gemini narrator backend
+    # (packages/narrator/gemini.py) needs an async HTTP client with a real
+    # timeout. Already in uv.lock (it was a dev dep), so this downloads
+    # nothing new; no SDK is added.
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
-    "httpx>=0.27",
     # Source: Day-3 Plan Step 0 -- RedisWindowStore backend + differential
     # tests need a real client; pandas moves here too since
     # tests/oracles/pandas_windows.py (test-only, Decision -- never a data

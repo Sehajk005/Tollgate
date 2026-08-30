@@ -3450,3 +3450,172 @@ Threat Model §9.
 
 ### Implementation impact
 None (documentation only): `Flow.md` §10 and `README.md`.
+
+---
+
+## Gate I: Day 8 — "Demo UI: tokens, D0 shell, D3, D6, storefront, Gemini narrator" (30 August 2026)
+
+Days 1–7 shipped the scoring core and every control behind it, but not the operator-facing
+surface that carries the demo. Day 8 builds exactly that surface — a plain-CSS design-token
+layer, the D0 dashboard shell (Stream Rail + three monochrome system-state banners + SSE
+polling recovery), D3 Incident Detail in full (including operator confirmation of proposed
+enforcement), D6 Metrics rendered from a committed evaluation artifact with zero live
+computation, the storefront's five remaining decision screens, and the Gemini narrator
+behind `NARRATOR_BACKEND` with the template as an always-available fallback — and nothing
+behind it. No new detector, feature, metric, or evaluation redesign.
+
+## Decision 95: Day-8 design tokens are plain CSS custom properties, not Tailwind
+
+### Context
+`08-UIUX-SPEC-v2.md:570` specifies Tailwind with tokens in `tailwind.config.js`. The repo has
+never carried a CSS framework — Day 1 excluded it explicitly and `06-APPFLOW-v2.md` records
+the exclusion — and Day 8's token hour is hard-capped.
+
+### Decision
+The token layer is plain CSS custom properties: `services/dashboard/src/styles/{tokens,type,
+base}.css` (dark, scoped to `.tg-app`) and `services/storefront/src/styles/tokens.css` (light,
+scoped to `.st-app`). Every token §2.2/§2.3/§2.4 names is a custom property; §3.3's scale and
+§3.4's `.tg-num` are utility classes; §7's `prefers-reduced-motion` block is transcribed
+verbatim into `base.css`. `@fontsource/ibm-plex-{sans,mono}` stays (§10 calls self-hosting
+non-negotiable for an offline demo — two npm packages, five `@import` lines).
+
+### Specification impact
+Supersedes `08-UIUX-SPEC-v2.md:570`'s "Tailwind, tokens in `tailwind.config.js`". The two
+theme scopes (`.tg-app` / `.st-app`) and every token value are unchanged.
+
+### Implementation impact
+`services/dashboard/src/styles/*.css` (new), `services/storefront/src/styles/tokens.css`
+(new), `services/{dashboard,storefront}/src/main.jsx`, `services/dashboard/package.json`.
+
+## Decision 96: the dashboard nav's "Incidents" item routes straight to D3; no D2 list is built
+
+### Context
+`06-APPFLOW-v2.md:117` specifies a three-item nav *Live / Incidents / Metrics*, while
+`06-APPFLOW-v2.md:47` cuts D2 (the incidents list) and says "navigate D1 → D3 directly".
+
+### Decision
+"Incidents" routes straight to D3 for the newest LIVE incident (tracked from the SSE stream's
+`incident.incident_id` where `state != CLOSED`), and renders the §8 empty state when there is
+none. No D2 list screen exists. Routing is `useState('live'|'incident'|'metrics')` — no
+`react-router`, no routing framework (Day-8 critical constraint).
+
+### Specification impact
+Reconciles `06-APPFLOW-v2.md:117` with `:47`. The nav label stays "Incidents".
+
+### Implementation impact
+`services/dashboard/src/App.jsx`, `services/dashboard/src/screens/D3Incident.jsx`.
+
+## Decision 97: one `narrator_call` row per NARRATION attempt, not per scored attempt
+
+### Context
+The Day-8 acceptance gate reads "`narrator_call` rows are written for every attempt,
+including failures". Taken literally that is one row per *scored* attempt, but
+`narrator_call.incident_id` is `NOT NULL` with an FK onto `incident` (`schema.sql:230-238`) —
+a per-scored-attempt row is unrepresentable (most scored attempts have no incident).
+
+### Decision
+The schema settles it: **one `narrator_call` row per narration attempt** — every Gemini
+dispatch, successful or failed. A narrative is minted once per incident (at open), so this is
+one row per incident when the Gemini backend is active, zero when it is not. `call_id` is a
+deterministic digest of `(incident_id, requested_at, backend)`, `INSERT OR IGNORE` on the PK,
+so the drainer's byte-0 re-drain stays idempotent.
+
+### Specification impact
+Clarifies the gate's "every attempt" as "every narration attempt". No schema change.
+
+### Implementation impact
+`packages/storage/repository.py` (`insert_narrator_call`), `packages/storage/drainer.py`,
+`services/scorer/scoring.py` (`_run_gemini_narration`).
+
+## Decision 98: the Gemini narrator is dispatched out of band, after the terminal SSE publish
+
+### Context
+`services/scorer/scoring.py::_resolve_layer2` carries an explicit contract
+(`scoring.py:133-141`): "THIS BLOCK MUST CONTAIN NO `await`" — the 100-concurrent-vs-sequential
+CUSUM guarantee (`test_concurrent_cusum.py`) depends on the whole Layer-2 fold running to
+completion under the single-threaded loop. A network call cannot live where the template
+render lives.
+
+### Decision
+`_resolve_layer2` is UNCHANGED: it still renders the template narrative synchronously and
+sets `narrative_source="template"`. When a narrative was just minted AND
+`NARRATOR_ENABLED != "false"` AND `NARRATOR_BACKEND == "gemini"` AND `GEMINI_API_KEY` is set,
+`score_attempt` schedules `asyncio.create_task(_run_gemini_narration(...))` **after** the
+terminal `event_bus.publish` — outside the atomic block, outside the latency window. On
+success it sets `incident.narrative` / `narrative_source="llm"` and spools it; on ANY failure
+(invalid JSON, 429, timeout, connection, charset) the template narrative is untouched and
+only a `narrator_call` row with `fallback_used=1` is spooled. No exception ever escapes to a
+request or the UI. `httpx>=0.27` moves from `[dev]` to base `dependencies` (already in
+`uv.lock`); no SDK is added.
+
+### Specification impact
+Realises TRD §6.11's "Gemini is a drop-in on Day 8 behind `NARRATOR_BACKEND`" without
+touching the Layer-2 concurrency contract.
+
+### Implementation impact
+`packages/narrator/gemini.py` (new), `packages/narrator/template.py` (dispatcher),
+`services/scorer/scoring.py`, `services/scorer/deps.py` (`gemini_tasks`, `gemini_transport`),
+`packages/storage/drainer.py`, `eval/corpus.py` (`NARRATOR_ENABLED=false`), `pyproject.toml`.
+
+## Decision 99: `PolicyEngine` gains a per-entity confirmed-ceiling override; the limitation is scoped and documented
+
+### Context
+Nothing on the scoring path read `enforcement_action`, so confirming a proposed `step_up` /
+`block` on D3 would be theatre — `_resolve_layer2` caps on `snapshot.auto_ceiling_tier`
+(`challenge`) only.
+
+### Decision
+`PolicyEngine` gains `_confirmed_ceiling: Dict[(entity_type, entity_key), Decision]`.
+`resolve()` step 5 reads `ceiling = self._confirmed_ceiling.get(entity.as_tuple(),
+snapshot.auto_ceiling_tier)` — still `challenge` for every entity no operator has touched,
+raised only by an explicit `POST /v1/incidents/{id}/confirm` (which calls
+`set_confirmed_ceiling`), cleared by `POST .../resolve` (`clear_confirmed_ceiling`) and by
+`ReplayDriver.reset()` (`clear()`). In-memory dict lookup — no hot-path I/O.
+
+**Scoped limitation (recorded in README):** confirmation raises the ceiling for SUBSEQUENT
+attempts from that entity only. It does not retroactively change attempts already scored, and
+the enforcement ledger's `expires_at` TTL still governs expiry. The two writes
+(`confirm_enforcement_action` UPDATE, `resolve_incident` UPDATE + `release_enforcement_for_incident`)
+are direct, not spooled — a synchronous operator action must be visible on the next read, not
+50 ms later. The in-process `IncidentRegistry` is not mutated by resolve (it auto-closes on
+cooldown); the SQLite `incident.state` is set to `CLOSED`.
+
+### Specification impact
+Realises App Flow J3/J4's confirmation and false-positive-recovery journeys. No schema change
+(`enforcement_action` and `incident` already carry every column).
+
+### Implementation impact
+`packages/detect/policy.py`, `packages/storage/repository.py` (`read_incident_detail` /
+`read_open_incidents` / `confirm_enforcement_action` / `release_enforcement_for_incident` /
+`resolve_incident`), `services/scorer/routes_incidents.py` (new), `services/scorer/app.py`.
+
+## Decision 100: the D6 rupee gap is `cost(F1-optimal) − cost(cost-optimal)` at π₀, in minor units, with its inputs emitted
+
+### Context
+The phrase "rupee gap" appears only in prose across the PRD, App Flow and UI/UX spec — three
+plausible readings, no definition anywhere in the repo (`05-EVAL-PROTOCOL-v2.md:13` was
+written to prevent exactly an undefined headline number).
+
+### Decision
+`rupee_gap_minor = expected_cost_per_10k(F1-optimal, π₀, "challenge") −
+expected_cost_per_10k(cost-optimal, π₀, "challenge")`, at π₀ (steady-state prevalence), tier
+`challenge`, in integer minor units, `≥ 0` by construction. `f1_optimal` is the first-wins
+argmax of `f1(fpr, tpr, π₀)` over the ROC convex hull `evaluate()` already built;
+`cost_optimal` is the first-wins argmin of expected cost (== `Report.min_cost_pi0`). The
+artifact emits both points' `(fpr, tpr)`, `c_fn_minor` (5200) and `c_fp_minor("challenge")`
+(1800) so the gap is hand-checkable from `eval/outputs/d6.json` alone
+(`test_d6_cost_gap.py`). For `l1-lgbm-v1` at π₀ the two optima coincide (cost is FPR-dominated
+at that prevalence), so the gap is `0.0` — the headline number is the
+`regime_switch_saving_minor` instead. The committed artifact carries all six blocks plus a
+`block4_cost` block; `.gitignore` gains a `!eval/outputs/d6.json` exception so a clean clone
+renders D6 with zero live computation.
+
+### Specification impact
+Pins Eval Protocol §1.4's F1-optimal / cost-optimal / regime-switch quantities to a single
+hand-checkable definition. The evaluation harness is not redesigned — `eval/d6.py` is a
+serialiser over the `HarnessRun` object `run_all()` already returns.
+
+### Implementation impact
+`eval/d6.py` (new), `eval/harness.py` (`main` writes `d6.json`), `.gitignore`,
+`services/dashboard/vite.config.js` (`server.fs.allow`),
+`services/dashboard/src/screens/D6Metrics.jsx`, `services/dashboard/src/components/charts/`.

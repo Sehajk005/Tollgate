@@ -131,6 +131,13 @@ class ScorerState:
     # authenticates (and can then fail-open, merchant-scoped); a COLD cache +
     # locked DB returns 503 -- auth never fails open (Decision 89).
     api_key_cache: dict = field(default_factory=dict)
+    # Source: Day-8 Plan Step 9 -- out-of-band Gemini narrator dispatch.
+    # `gemini_tasks` holds the scheduled asyncio tasks (so a caller / test can
+    # await them); `gemini_transport` is an injected httpx transport for tests
+    # (None -> the real network). Both default such that every bare
+    # ScorerState(...) construction is unaffected.
+    gemini_tasks: set = field(default_factory=set)
+    gemini_transport: object = None
 
     def db_read_conn(self):
         return connect(self.db_path)

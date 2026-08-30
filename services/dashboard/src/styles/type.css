@@ -1,0 +1,40 @@
+/*
+ * Day 8, Step 1 -- typography. Source: UIUX v2 SS3.1 (IBM Plex Sans + IBM
+ * Plex Mono), SS3.3 (dashboard scale), SS3.4 (tabular figures).
+ *
+ * Fonts self-hosted via @fontsource (UIUX v2 SS10: "Self-hosting is
+ * non-negotiable -- the demo must render with no network"). Two npm packages,
+ * the weights SS3.2 permits on dark: Sans 400/500/600, Mono 400/500.
+ */
+
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+
+.tg-app {
+  --tg-font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --tg-font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+  font-family: var(--tg-font-sans);
+  font-size: 14px;
+  line-height: 20px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* SS3.4 -- applied to every number that changes. One CSS line, the single
+   highest-leverage detail in the spec. */
+.tg-num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
+
+/* SS3.3 -- dashboard scale. */
+.tg-display-lg  { font-size: 32px; line-height: 38px; font-weight: 600; letter-spacing: -0.5px; }
+.tg-display-md  { font-size: 24px; line-height: 30px; font-weight: 600; letter-spacing: -0.3px; }
+.tg-display-sm  { font-size: 20px; line-height: 26px; font-weight: 500; letter-spacing: -0.2px; }
+.tg-body-lg     { font-size: 16px; line-height: 26px; font-weight: 400; }
+.tg-body        { font-size: 14px; line-height: 20px; font-weight: 400; }
+.tg-body-strong { font-size: 14px; line-height: 20px; font-weight: 500; }
+.tg-label       { font-size: 12px; line-height: 16px; font-weight: 500; letter-spacing: 0.4px; text-transform: uppercase; }
+.tg-caption     { font-size: 12px; line-height: 16px; font-weight: 400; }
+.tg-mono-data   { font-family: var(--tg-font-mono); font-size: 13px; line-height: 18px; font-weight: 400; }
+.tg-mono-metric { font-family: var(--tg-font-mono); font-size: 28px; line-height: 32px; font-weight: 500; letter-spacing: -0.3px; font-variant-numeric: tabular-nums; }
+.tg-mono-caption{ font-family: var(--tg-font-mono); font-size: 11px; line-height: 14px; font-weight: 400; letter-spacing: 0.3px; }

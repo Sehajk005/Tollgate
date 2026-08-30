@@ -30,8 +30,11 @@ exactly Day 5's -- the guard argument Decision 26 / Day 5 both used.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import logging
+import os
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -90,6 +93,9 @@ def _action_id(incident_id: str, entity_type: str, entity_key: str, tier: str) -
     return "A" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:25].upper()
 
 
+logger = logging.getLogger("tollgate.scorer.narrator")
+
+
 @dataclass(frozen=True)
 class _Day6Outcome:
     decision: Decision
@@ -101,6 +107,11 @@ class _Day6Outcome:
     sse_incident: Optional[dict]
     sse_enforcement: dict
     spool_extras: dict
+    # Source: Day-8 Plan Step 9 -- set only when a TEMPLATE narrative was just
+    # minted this attempt: {"incident": <Incident>, "prompt": <assembled prompt>}.
+    # score_attempt uses it to schedule an OUT-OF-BAND Gemini call AFTER the
+    # terminal event_bus.publish -- never inside this fold, never in the hot path.
+    narration: Optional[dict] = None
 
 
 def _pinned_snapshot(state: ScorerState, merchant_id: str, version: int):
@@ -209,6 +220,7 @@ def _resolve_layer2(
     incident_id = None
     sse_incident = None
     spool_extras: dict = {}
+    narration_dispatch: Optional[dict] = None
     if incident is not None:
         # Record the tier transition against the PINNED policy version
         # (Backend Schema §3.1). A CLOSED incident raises -- defensive only,
@@ -241,9 +253,12 @@ def _resolve_layer2(
                     decision=outcome.proposed_tier.value,
                     evaluation=evaluation,
                 )
-                assemble_prompt(_bundle)  # input-side gate; raises on hostile bytes
+                _prompt = assemble_prompt(_bundle)  # input-side gate; raises on hostile bytes
                 incident.narrative = _render_narrative(_bundle)["narrative"]
                 incident.narrative_source = "template"
+                # Day-8 Plan Step 9 -- hand the incident + the already-gated
+                # prompt back so score_attempt can dispatch Gemini out of band.
+                narration_dispatch = {"incident": incident, "prompt": _prompt}
             except Exception:  # noqa: BLE001 -- gate/vocab failure -> no narrative, never a 500
                 pass
 
@@ -308,7 +323,116 @@ def _resolve_layer2(
         sse_incident=sse_incident,
         sse_enforcement=sse_enforcement,
         spool_extras=spool_extras,
+        narration=narration_dispatch,
     )
+
+
+# ---------------------------------------------------------------------------
+# Day-8 Plan Step 9 -- the out-of-band Gemini narrator dispatch.
+#
+# `_resolve_layer2` is UNCHANGED: it still renders the template narrative
+# synchronously and sets narrative_source="template". The operator always has
+# a narrative immediately, and the fallback needs no failure path to reach it.
+#
+# When a narrative was just minted AND the env gates all pass, score_attempt
+# schedules `_run_gemini_narration` as a task AFTER the terminal
+# event_bus.publish -- outside the atomic block, outside the latency window.
+# On success it replaces incident.narrative / narrative_source="llm" and
+# spools it; on ANY failure (invalid JSON, 429, timeout, connection, charset)
+# the template narrative stays untouched and only a narrator_call row is
+# spooled with fallback_used=1. NO exception ever escapes to a request or the
+# UI. A narrator_call row is written for EVERY narration attempt.
+# ---------------------------------------------------------------------------
+
+
+def _narrator_enabled() -> bool:
+    return os.environ.get("NARRATOR_ENABLED", "true").strip().lower() != "false"
+
+
+def _gemini_configured() -> bool:
+    return (
+        _narrator_enabled()
+        and os.environ.get("NARRATOR_BACKEND", "template") == "gemini"
+        and bool(os.environ.get("GEMINI_API_KEY"))
+    )
+
+
+def _narrator_call_id(incident_id: str, now_ms: int, backend: str) -> str:
+    raw = f"{incident_id}|{now_ms}|{backend}"
+    return "N" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:25].upper()
+
+
+async def _run_gemini_narration(state: ScorerState, *, incident, prompt: str, now_ms: int) -> None:
+    """One narration attempt. Spools an incident+narrator_call payload on
+    success, a narrator_call-only payload on failure. Never raises."""
+    from packages.narrator.gemini import GeminiError, call_gemini
+    from packages.narrator.template import CHARSET_RE, MAX_NARRATIVE_CHARS
+
+    backend = "gemini"
+    call_id = _narrator_call_id(incident.incident_id, now_ms, backend)
+    status = "ok"
+    latency_ms: Optional[int] = None
+    llm_narrative: Optional[str] = None
+
+    try:
+        resp = await call_gemini(
+            prompt,
+            api_key=os.environ.get("GEMINI_API_KEY", ""),
+            model=os.environ.get("GEMINI_MODEL", "gemini-1.5-flash"),
+            transport=state.gemini_transport,
+        )
+        latency_ms = resp.latency_ms
+        data = json.loads(resp.text)  # -> ValueError (invalid_json) on bad JSON
+        if not isinstance(data, dict) or set(data) != {"narrative", "confidence_note"}:
+            raise ValueError("schema")
+        candidate = str(data["narrative"])
+        if not CHARSET_RE.match(candidate):
+            raise ValueError("charset")
+        llm_narrative = candidate[:MAX_NARRATIVE_CHARS]
+    except GeminiError as exc:
+        status = exc.reason
+    except ValueError as exc:
+        msg = str(exc)
+        status = msg if msg in ("schema", "charset") else "invalid_json"
+    except Exception:  # noqa: BLE001 -- NOTHING reaches a request or the UI
+        status = "error"
+        logger.exception("gemini narration task failed unexpectedly")
+
+    fallback_used = 0 if llm_narrative is not None else 1
+    call_row = {
+        "call_id": call_id,
+        "incident_id": incident.incident_id,
+        "backend": backend,
+        "requested_at": now_ms,
+        "status": status,
+        "latency_ms": latency_ms,
+        "fallback_used": fallback_used,
+    }
+
+    if llm_narrative is not None:
+        incident.narrative = llm_narrative
+        incident.narrative_source = "llm"
+        state.spool.append(call_id, {"incident": incident.to_row(), "narrator_call": [call_row]})
+    else:
+        state.spool.append(call_id, {"narrator_call": [call_row]})
+
+
+def _maybe_dispatch_gemini(state: ScorerState, narration: dict, now_ms: int) -> None:
+    """Schedule the out-of-band narration task iff the env gates pass and a
+    loop is running. A pure no-op otherwise (the template stays in force)."""
+    if not _gemini_configured():
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    task = loop.create_task(
+        _run_gemini_narration(
+            state, incident=narration["incident"], prompt=narration["prompt"], now_ms=now_ms
+        )
+    )
+    state.gemini_tasks.add(task)
+    task.add_done_callback(state.gemini_tasks.discard)
 
 
 async def score_attempt(
@@ -555,15 +679,26 @@ async def score_attempt(
         # unknown keys. `fail_open` is always False on the healthy path (a
         # fail-open never reaches here -- it is caught in routes_score.py);
         # `alert` reflects the merchant's rolling fail-open budget.
+        # Day-8 Plan Step 2 -- `shed` is always False on the healthy path (a
+        # shed never reaches here -- it is handled in routes_score.py::_shed),
+        # so `availability` carries all three keys on every published event.
         "availability": {
             "fail_open": False,
             "alert": (
                 state.availability.is_alerting(merchant_id, ingest_ms)
                 if state.availability is not None else False
             ),
+            "shed": False,
         },
     }
     await state.event_bus.publish(event)
+
+    # Source: Day-8 Plan Step 9 -- AFTER the terminal publish, outside the
+    # atomic block and the latency window: schedule the Gemini narration task
+    # iff a template narrative was just minted and the env gates pass. A no-op
+    # on the template backend and in eval (NARRATOR_ENABLED=false).
+    if day6 is not None and day6.narration is not None:
+        _maybe_dispatch_gemini(state, day6.narration, ingest_ms)
 
     response = ScoreResponse(attempt_uid=attempt_uid, decision=decision, latency_ms=latency_ms)
     return response, event

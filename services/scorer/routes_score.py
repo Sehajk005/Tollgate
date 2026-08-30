@@ -149,6 +149,33 @@ async def _shed(
     state.spool.append(attempt_uid, {"attempt": attempt.to_dict(), "score": score.to_dict()})
 
     response.headers["X-Tollgate-Shed"] = "1"
+
+    # Source: Day-8 Plan Step 2 (G2) -- the shed path previously published
+    # nothing, so D0's rules-only banner and the Stream Rail's hollow tick had
+    # no data source. Publish the EXACT event shape `_fail_open` already uses,
+    # with `availability.shed=True`. The latency budget is measured on
+    # `stopwatch.elapsed_ms()` stamped before this call (`_fail_open` set the
+    # precedent), so `test_admission_shed.py`'s < 5 ms gate is unaffected.
+    alerting = (
+        state.availability.is_alerting(merchant_id, now_ms)
+        if state.availability is not None else False
+    )
+    await state.event_bus.publish({
+        "attempt_uid": attempt_uid,
+        "decision": tier.value,
+        "ip": ip,
+        "bin": body.bin,
+        "ingest_time": now_ms,
+        "rules_fired": [],
+        "feature_snapshot": snapshot,
+        "threat_state": None,
+        "regime": "in_control",
+        "replay": _IDLE_REPLAY,
+        "incident": None,
+        "enforcement": {"active": 0, "k_max": 0, "advisory_mode": False},
+        "control_arm": False,
+        "availability": {"fail_open": False, "alert": alerting, "shed": True},
+    })
     return ScoreResponse(attempt_uid=attempt_uid, decision=tier, latency_ms=stopwatch.elapsed_ms())
 
 
@@ -198,7 +225,9 @@ async def _fail_open(
         "incident": None,
         "enforcement": {"active": 0, "k_max": 0, "advisory_mode": False},
         "control_arm": False,
-        "availability": {"fail_open": True, "alert": alerting},
+        # Day-8 Plan Step 2 -- `shed` added so `availability` is total on every
+        # published event; a fail-open is not a shed.
+        "availability": {"fail_open": True, "alert": alerting, "shed": False},
     })
     return ScoreResponse(attempt_uid=attempt_uid, decision=Decision.ALLOW, latency_ms=stopwatch.elapsed_ms())
 

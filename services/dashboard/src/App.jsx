@@ -1,229 +1,139 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-// Day 2: D1 threat band + four counters + DC control strip.
-// Source: Day-2 Plan §H -- "still one file, still no Tailwind / tokens /
-// router / component library" (UIUX v2 §10 Day-2 row: "unstyled").
+import useEventStream from "./hooks/useEventStream.js";
+import StreamRail from "./components/StreamRail.jsx";
+import ThreatBand from "./components/ThreatBand.jsx";
+import SystemBanner from "./components/SystemBanner.jsx";
+import DemoControlStrip from "./components/DemoControlStrip.jsx";
+import D1Live from "./screens/D1Live.jsx";
+import D3Incident from "./screens/D3Incident.jsx";
+import D6Metrics from "./screens/D6Metrics.jsx";
+
+// Day 8, Step 3 -- the D0 shell (App Flow SS5 D0). Three routes, linear nav,
+// no router (`useState('live'|'incident'|'metrics')`). The Stream Rail sits on
+// EVERY screen under the nav; the threat band and the system-state banner
+// stack under the rail (banner BELOW the band, never above -- SS6.10). The DC
+// strip is pinned bottom.
 //
-// The threat band renders `event.threat_state` verbatim -- it is never
-// derived locally (Day-2 Plan §H failure mode: "Deriving the band locally
-// instead of rendering event.threat_state"). Colour discipline: semantic
-// colour is threat state only; replay chip and SSE-health copy stay
-// monochrome; Launch is the single interactive accent; calm is grey, never
-// green (Day-2 Plan §H).
+// Nav reconciliation (App Flow SS2 cut D2 / SS5 "navigate D1 -> D3 directly"):
+// "Incidents" routes straight to D3 for the newest LIVE incident, and renders
+// the SS8 empty state when there is none. No D2 list is built.
 
-const THREAT_LABELS = { calm: "CALM", elevated: "ELEVATED", under_attack: "UNDER ATTACK", resolved: "RESOLVED" };
-const THREAT_COLORS = { calm: "#8a8a8a", elevated: "#c98a1f", under_attack: "#c23b3b", resolved: "#4a7fb5" };
+const WINDOW_MS = 60_000;
 
-function ThreatIcon({ state }) {
-  const color = THREAT_COLORS[state] || THREAT_COLORS.calm;
-  const base = { width: 26, height: 26, borderRadius: "50%", display: "inline-block", verticalAlign: "middle" };
-  // Text label + shape, never colour alone (UIUX v2 §2.1 accessibility floor).
-  if (state === "elevated") {
-    return <span style={{ ...base, border: `3px solid ${color}`, background: `linear-gradient(90deg, ${color} 50%, transparent 50%)` }} />;
-  }
-  if (state === "under_attack") {
-    return <span style={{ ...base, background: color, border: `3px solid ${color}` }} />;
-  }
-  if (state === "resolved") {
-    return (
-      <span style={{ ...base, background: color, border: `3px solid ${color}`, textAlign: "center", lineHeight: "20px", color: "#fff", fontSize: 13 }}>
-        {"✓"}
-      </span>
-    );
-  }
-  return <span style={{ ...base, border: `3px solid ${color}` }} />; // calm: hollow ring
-}
-
-function Tile({ label, value, caption }) {
-  return (
-    <div style={{ border: "1px solid #ccc", padding: "0.6rem 0.8rem", minWidth: 140 }}>
-      <div style={{ fontSize: "0.7rem", opacity: 0.65, letterSpacing: "0.04em" }}>{label}</div>
-      <div style={{ fontSize: "1.5rem", fontWeight: 700 }}>{value}</div>
-      <div style={{ fontSize: "0.65rem", opacity: 0.55 }}>{caption}</div>
-    </div>
-  );
-}
-
-const TIER_OPTIONS = [
-  { value: "easy", label: "easy", enabled: true, note: null },
-  { value: "hard", label: "hard", enabled: true, note: null },
-  { value: "medium", label: "medium", enabled: true, note: null },
-  { value: "evasive", label: "evasive", enabled: false, note: "Day 7" },
+const NAV = [
+  { id: "live", label: "Live" },
+  { id: "incident", label: "Incidents" },
+  { id: "metrics", label: "Metrics" },
 ];
 
-const FIVE_MIN_MS = 5 * 60 * 1000;
-const IDLE_REPLAY = { state: "idle", tier: null, seed: null, speed: null, sent: 0, total: 0, episode_id: null, virtual_time_ms: 0 };
-const API_KEY = import.meta.env.VITE_TOLLGATE_API_KEY || "";
-
 export default function App() {
-  const [events, setEvents] = useState([]);
-  const [connected, setConnected] = useState(false);
-  const [tier, setTier] = useState("easy");
-  const [speed, setSpeed] = useState(60);
-  const [replayStatus, setReplayStatus] = useState(IDLE_REPLAY);
-  const [actionError, setActionError] = useState(null);
-  // Day 6: the blast-radius cap. Server-computed; rendered verbatim, never
-  // derived locally (same discipline as the threat band).
-  const [enforcement, setEnforcement] = useState(null);
-
-  useEffect(() => {
-    const source = new EventSource("/v1/stream");
-    source.onopen = () => setConnected(true);
-    source.onerror = () => setConnected(false);
-    source.onmessage = (evt) => {
-      const data = JSON.parse(evt.data);
-      setEvents((prev) => [data, ...prev].slice(0, 100));
-      if (data.replay) setReplayStatus(data.replay);
-      if (data.enforcement) setEnforcement(data.enforcement);
-    };
-    return () => source.close();
-  }, []);
+  const { events, connectionMode, lastEventAt } = useEventStream();
+  const [route, setRoute] = useState("live");
+  const [replayStatus, setReplayStatus] = useState(null);
 
   const latest = events[0];
   const threatState = latest?.threat_state || "calm";
   const regime = latest?.regime || "in_control";
+  const enforcement = latest?.enforcement || null;
+  const latestIngest = latest?.ingest_time ?? null;
 
-  const latestIngestTime = latest?.ingest_time;
-  const attemptsIn5Min = latestIngestTime == null
-    ? 0
-    : events.filter((e) => latestIngestTime - e.ingest_time <= FIVE_MIN_MS).length;
+  useEffect(() => {
+    if (latest?.replay) setReplayStatus(latest.replay);
+  }, [latest]);
 
-  const cardsPerIpTop = events.length === 0
-    ? null
-    : events.reduce((max, e) => {
-        const v = e.feature_snapshot?.distinct_cards_per_ip_5m;
-        return typeof v === "number" && v > max ? v : max;
-      }, 0);
+  // --- system-banner inputs, all in event time -------------------------
+  const shedInLast60 = useMemo(() => {
+    if (latestIngest == null) return 0;
+    return events.filter(
+      (e) => e.availability?.shed && latestIngest - e.ingest_time <= WINDOW_MS
+    ).length;
+  }, [events, latestIngest]);
 
-  async function callReplay(path, body) {
-    setActionError(null);
-    try {
-      const resp = await fetch(`/v1/replay/${path}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Tollgate-Key": API_KEY },
-        body: body ? JSON.stringify(body) : undefined,
-      });
-      const data = await resp.json().catch(() => null);
-      if (!resp.ok) {
-        setActionError(`HTTP ${resp.status}: ${JSON.stringify(data)}`);
-        return;
-      }
-      if (data) setReplayStatus(data);
-    } catch (err) {
-      setActionError(String(err));
+  const failOpenAgoS = useMemo(() => {
+    if (latestIngest == null) return null;
+    const recent = events.filter(
+      (e) => e.availability?.fail_open && latestIngest - e.ingest_time <= WINDOW_MS
+    );
+    if (recent.length === 0) return null;
+    const earliest = recent.reduce((a, b) => (a.ingest_time <= b.ingest_time ? a : b));
+    return Math.max(0, Math.round((latestIngest - earliest.ingest_time) / 1000));
+  }, [events, latestIngest]);
+
+  // --- newest live incident (drives the Incidents nav item) -----------
+  const liveIncidentId = useMemo(() => {
+    for (const e of events) {
+      const inc = e.incident;
+      if (inc && inc.incident_id && inc.state !== "CLOSED") return inc.incident_id;
     }
-  }
+    return null;
+  }, [events]);
 
-  const isRunning = replayStatus.state === "running";
+  const stale = connectionMode !== "live";
+  const staleAgo = lastEventAt ? Math.round((Date.now() - lastEventAt) / 1000) : null;
 
   return (
-    <div style={{ fontFamily: "monospace", display: "flex", flexDirection: "column", minHeight: "100vh" }}>
-      {/* D1 threat band -- full width, top. Renders event.threat_state verbatim. */}
-      <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", padding: "0.9rem 1rem", background: "#111", color: "#eee" }}>
-        <ThreatIcon state={threatState} />
-        <strong style={{ fontSize: "1.15rem", letterSpacing: "0.04em" }}>
-          {THREAT_LABELS[threatState] || threatState.toUpperCase()}
-        </strong>
-        <span style={{ marginLeft: "1rem", opacity: 0.6 }}>regime: {regime}</span>
-        <span style={{ marginLeft: "auto", opacity: 0.6 }}>SSE: {connected ? "connected" : "disconnected"}</span>
-      </div>
-
-      <div style={{ padding: "1rem", flex: 1 }}>
-        <h1 style={{ fontSize: "1rem", margin: "0 0 0.75rem" }}>Tollgate -- Day 2</h1>
-
-        <div style={{ display: "flex", gap: "0.75rem", marginBottom: "1rem", flexWrap: "wrap" }}>
-          <Tile label="ATTEMPTS &middot; 5 MIN" value={attemptsIn5Min} caption="live" />
-          <Tile label="DECLINE RATE" value="—" caption="needs /v1/outcome &middot; Day 7" />
-          <Tile label="CARDS PER IP &middot; TOP" value={cardsPerIpTop == null ? "—" : cardsPerIpTop} caption="store-relative quantile &middot; Day 5" />
-          <Tile
-            label="ENFORCEMENT"
-            value={enforcement ? `${enforcement.active} / ${enforcement.k_max}` : "—"}
-            caption={enforcement ? "blast-radius cap" : "blast-radius cap · Day 6"}
-          />
-        </div>
-
-        {/* Day 6: advisory-mode banner. System-state, NOT a threat colour --
-            monochrome on a firm hairline (UIUX v2 §6.10). Exact copy per
-            UIUX v2 §5 (line 443). */}
-        {enforcement && enforcement.advisory_mode && (
-          <div style={{
-            display: "flex", alignItems: "center", gap: "0.5rem", margin: "0 0 1rem",
-            padding: "0.5rem 0.8rem", background: "#f2f2f2", border: "1px solid #999",
-            color: "#333", fontSize: "0.82rem",
-          }}>
-            <span aria-hidden="true">{"⌁"}</span>
-            <span>
-              Enforcement paused — blast-radius cap reached ({enforcement.active} / {enforcement.k_max}).
-              Scoring continues. Resolve incidents to resume.
-            </span>
-          </div>
-        )}
-
-        <ul style={{ listStyle: "none", padding: 0, margin: 0, fontSize: "0.82rem" }}>
-          {events.map((e, i) => (
-            <li key={i} style={{ padding: "0.25rem 0", borderBottom: "1px solid #ddd" }}>
-              <span style={{ opacity: 0.55 }}>[{e.replay?.tier ? e.replay.tier.toUpperCase() : "--"}]</span>{" "}
-              {new Date(e.ingest_time).toISOString()} - {e.ip} - bin {e.bin} -{" "}
-              <strong>{e.decision}</strong> ({(e.attempt_uid || "").slice(0, 8)})
-              {e.rules_fired && e.rules_fired.length > 0 && (
-                <span style={{ opacity: 0.6 }}> -- rules: {e.rules_fired.join(", ")}</span>
-              )}
-              {e.incident && (
-                <span style={{ opacity: 0.6 }}>
-                  {" "}-- incident {e.incident.pseudonym} [{e.incident.state}] {e.incident.detector}
-                  {" → "}{e.incident.in_force_tier}
-                  {e.incident.proposed_tier !== e.incident.in_force_tier
-                    ? ` (proposed ${e.incident.proposed_tier})`
-                    : ""}
-                </span>
-              )}
-              {e.control_arm && <span style={{ opacity: 0.6 }}> -- control</span>}
-            </li>
+    <div className="tg-app" style={{ display: "flex", flexDirection: "column", minHeight: "100vh" }}>
+      {/* nav */}
+      <nav
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 20,
+          padding: "12px 24px",
+          background: "var(--tg-surface-1)",
+          borderBottom: "1px solid var(--tg-hairline)",
+        }}
+      >
+        <strong className="tg-body-strong" style={{ letterSpacing: "0.14em" }}>TOLLGATE</strong>
+        <div style={{ display: "flex", gap: 4 }}>
+          {NAV.map((n) => (
+            <button
+              key={n.id}
+              onClick={() => setRoute(n.id)}
+              className="tg-body-strong"
+              style={{
+                background: "transparent",
+                border: "none",
+                padding: "6px 10px",
+                cursor: "pointer",
+                color: route === n.id ? "var(--tg-primary)" : "var(--tg-text-2)",
+                borderBottom: route === n.id ? "2px solid var(--tg-primary)" : "2px solid transparent",
+              }}
+            >
+              {n.label}
+            </button>
           ))}
-        </ul>
-      </div>
+        </div>
+        <span className="tg-mono-caption" style={{ marginLeft: "auto", color: "var(--tg-text-mute)" }}>
+          SSE: {connectionMode}
+          {stale && staleAgo != null ? ` · last event ${staleAgo}s ago` : ""}
+        </span>
+      </nav>
 
-      {/* DC strip -- pinned bottom; never hides, never dims (Day-2 Plan §H). */}
-      <div style={{
-        position: "sticky", bottom: 0, display: "flex", alignItems: "center", gap: "0.75rem",
-        padding: "0.6rem 1rem", background: "#111", color: "#eee", flexWrap: "wrap",
-      }}>
-        <label>
-          tier:{" "}
-          <select value={tier} onChange={(evt) => setTier(evt.target.value)} disabled={isRunning}>
-            {TIER_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value} disabled={!opt.enabled} title={opt.note || undefined}>
-                {opt.label}{opt.note ? ` (${opt.note})` : ""}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          speed:{" "}
-          <select value={speed} onChange={(evt) => setSpeed(Number(evt.target.value))} disabled={isRunning}>
-            <option value={0}>0 (full tilt)</option>
-            <option value={1}>1</option>
-            <option value={60}>60</option>
-          </select>
-        </label>
-        <button
-          onClick={() => callReplay("start", { tier, seed: 42, speed, epoch_ms: 0 })}
-          disabled={isRunning}
-          style={{ background: "#2f6fed", color: "#fff", border: "none", padding: "0.4rem 0.9rem", cursor: isRunning ? "default" : "pointer" }}
-        >
-          Launch
-        </button>
-        <button onClick={() => callReplay("stop")}>Stop</button>
-        <button onClick={() => callReplay("reset")}>Reset</button>
-        <span style={{ opacity: 0.6 }}>
-          replay: {replayStatus.state}
-          {replayStatus.total ? ` (${replayStatus.sent}/${replayStatus.total})` : ""}
-        </span>
-        <span style={{ marginLeft: "auto", opacity: 0.65 }}>
-          &times;60 VIRTUAL CLOCK &middot; WINDOWS PRESERVED &middot; TTD IN EVENT TIME
-        </span>
-        {actionError && <span style={{ color: "#e08080" }}>{actionError}</span>}
-      </div>
+      {/* the signature -- on every screen */}
+      <StreamRail events={events} />
+
+      {/* the store's threat level outranks Tollgate's health, always */}
+      <ThreatBand threatState={threatState} regime={regime} />
+      <SystemBanner
+        enforcement={enforcement}
+        shedInLast60={shedInLast60}
+        failOpenAgoS={failOpenAgoS}
+      />
+
+      <main style={{ flex: 1 }}>
+        {route === "live" && <D1Live events={events} enforcement={enforcement} />}
+        {route === "metrics" && <D6Metrics />}
+        {route === "incident" && (
+          <D3Incident
+            incidentId={liveIncidentId}
+            sseIncident={latest?.incident || null}
+          />
+        )}
+      </main>
+
+      <DemoControlStrip replayStatus={replayStatus} onReplayStatus={setReplayStatus} />
     </div>
   );
 }

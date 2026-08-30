@@ -34,6 +34,7 @@ compute.py or the driver changes.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -198,6 +199,8 @@ def _replay_one(run: CorpusRun, *, db_path: Path, spool_dir: Path) -> int:
     import asyncio
     import random
 
+    os.environ["NARRATOR_ENABLED"] = "false"  # Day-8 Plan Step 9 -- zero Gemini calls in eval
+
     from packages.clock.clock import SystemClock
     from packages.clock.ids import UlidGenerator
     from packages.detect.rules import DayOneRules
@@ -264,6 +267,12 @@ def replay_corpus(
     so the corpus is deterministic; when False an existing DB is reused as-is.
     """
     from packages.storage.db import initialize_schema
+
+    # Source: Day-8 Plan Step 9 / G14 -- the evaluation harness makes ZERO
+    # Gemini calls. Forced here (scoped to the replay, not module-level) so a
+    # mis-set NARRATOR_BACKEND=gemini cannot dispatch an LLM call during a
+    # harness run.
+    os.environ["NARRATOR_ENABLED"] = "false"
 
     db_path = Path(db_path)
     spool_dir = Path(spool_dir)

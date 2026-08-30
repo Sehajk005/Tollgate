@@ -17,15 +17,96 @@ first real per-tier `eval_run` rows — the model informs the score, never the
 decision. See `Flow.md` for the actual execution paths and `Decisions.md` for
 the reasoning behind them.
 
-**Completed: Days 1–7.** Day 6 added Layer 2 (CUSUM / distinct-card drift →
+**Completed: Days 1–8.** Day 6 added Layer 2 (CUSUM / distinct-card drift →
 incident state machine → cost-derived, blast-radius-capped enforcement). Day 7
 added the security posture the Threat Model promises — merchant-scoped
 admission control with a rules-only shed rung, a fail-open ladder that always
 returns `allow`, `POST /v1/outcome` (HMAC + nonce + 5-minute staleness), the
 stored-decision replay reply, a single narrator admission boundary, and
 **Tier E**: an adaptive adversary tuned by a seeded parameter search against
-the frozen detector. Days 8–9 (the D3/D6 operator dashboard, the Gemini
-narrator backend, `/v1/stream` authentication) are not yet built.
+the frozen detector. **Day 8** built the operator surface — a plain-CSS design
+token layer, the D0 dashboard shell (Stream Rail + three monochrome
+system-state banners + SSE→5s-polling→SSE recovery), D3 Incident Detail with an
+operator confirm / resolve API, D6 Metrics rendered entirely from a committed
+evaluation artifact (zero live computation), the storefront's S1/S3/S5/S6/S7
+screens, and the **Gemini narrator** behind `NARRATOR_BACKEND` with the
+template as an always-available fallback. Day 9 (rehearsal / hardening) and
+`/v1/stream` authentication (Decision 94) are not yet built.
+
+## Operator surface (Day 8)
+
+The dashboard (`services/dashboard`, port `5174`) and storefront
+(`services/storefront`, port `5173`) are two Vite + React apps with a plain-CSS
+design-token layer (dark `.tg-app` / light `.st-app` — no Tailwind, Decision
+95). The dashboard shell carries the **Stream Rail** on every screen, the
+**threat band** (renders `threat_state` verbatim; text label + distinct ring
+glyph, never colour alone), and up to three **monochrome** system-state banners
+(advisory mode / rules-only shedding / fail-open — Tollgate's own health is
+never a threat colour). SSE drops fall back to 5-second polling of
+`GET /v1/stream/recent?after=<attempt_uid>` and recover to live on reconnect;
+`prefers-reduced-motion` freezes the rail (static snapshot) and the ticker.
+
+- **D3 Incident Detail** — `GET /v1/incidents/{id}` returns the read model
+  (narrative, detection timeline, contribution bars, entity table, audit trail,
+  collapsed client-asserted panel). Pseudonyms plus truncated real keys — never
+  a PAN, never a full card hash. A proposed `step_up` / `block` renders as a
+  *Confirm* button with an inline cost line; `POST /v1/incidents/{id}/confirm
+  {action_id, tier}` records the confirmation and raises that entity's ceiling
+  in the live `PolicyEngine`. **"This was legitimate"** →
+  `POST /v1/incidents/{id}/resolve {resolution}` closes the incident, releases
+  every enforcement row, and restores the `challenge` ceiling.
+
+  **Scoped limitation (Decision 99):** confirmation affects **subsequent**
+  attempts from that entity only. It does not retroactively change attempts
+  already scored, and the enforcement ledger's `expires_at` TTL still governs
+  expiry.
+
+- **D6 Metrics** — renders from the committed `eval/outputs/d6.json` with a
+  build-time `import` (no `fetch`, zero live computation). Regenerate it with:
+
+  ```
+  uv run python -m eval.harness --split all --seed 42 \
+      --corpus-db data/corpus/tollgate.db --model-dir models/
+  ```
+
+  (`eval/outputs/d6.json` is committed — `.gitignore` carries a
+  `!eval/outputs/d6.json` exception.) The block-4 **rupee gap** is
+  `cost(F1-optimal) − cost(cost-optimal)` at π₀ (steady-state prevalence), in
+  integer minor units, with `c_fn_minor`, `c_fp_minor("challenge")` and both
+  operating points emitted so it is hand-checkable from the artifact alone
+  (Decision 100). For `l1-lgbm-v1` at π₀ the two optima coincide, so the gap is
+  ₹0 and the headline number is the `regime_switch_saving_minor`.
+
+- **Storefront** — `S1 → S2 → {S5 | S3 | S6 | S7}` (S3 passed → S5, failed →
+  S6; S7 returns to S2). `S4` is not built. `lib/outcome.js` is a direct port
+  of `packages/contracts/decision.py`'s `resolve_client_outcome()` +
+  `UI_ROUTING_TABLE`. `?demo=1` on S2 shows a live `/v1/score` latency readout
+  and a tier badge that includes `shed` and `fail_open`.
+
+### The Gemini narrator
+
+```
+NARRATOR_BACKEND=gemini GEMINI_API_KEY=<key> \
+  uv run uvicorn services.scorer.app:create_app --factory --port 8080
+```
+
+- `NARRATOR_BACKEND` (default `template`) selects the backend. With `gemini`
+  and a `GEMINI_API_KEY`, a Gemini call is dispatched **out of band** — after
+  the terminal SSE publish, never inside `_resolve_layer2`, never in the
+  scoring hot path (Decision 98). The template narrative is written first and
+  is the always-available fallback; invalid JSON, a 429, a timeout, a
+  connection failure, or a charset violation all leave the template narrative
+  intact and the operator sees no error.
+- `NARRATOR_ENABLED=false` disables Gemini entirely (the template is used).
+  The evaluation harness forces this — a harness run makes **zero** Gemini
+  calls.
+- A `narrator_call` row is written for **every narration attempt**, success or
+  failure (`backend`, `status`, `latency_ms`, `fallback_used`). `narrator_call.
+  incident_id` is `NOT NULL`, so the reading is one row per *narration*
+  attempt, not per scored attempt (Decision 97).
+- Never sends a raw identifier or a C-class value: the only free string in the
+  request body is `assemble_prompt(bundle)`, already charset-gated and built
+  from a closed vocabulary.
 
 ## Running the demo
 

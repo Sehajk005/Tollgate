@@ -71,13 +71,16 @@ def render(bundle: EvidenceBundle) -> Dict[str, str]:
 
 def render_for_backend(bundle: EvidenceBundle) -> Dict[str, str]:
     """
-    Source: TRD §6.11 -- NARRATOR_BACKEND selects the backend; "template" is
-    the only implemented value on Day 3. Day 8 adds "gemini" as a drop-in
-    behind this same dispatcher.
+    Source: TRD §6.11 / Day-8 Plan Step 9 -- NARRATOR_BACKEND selects the
+    backend. `template` renders here synchronously. `gemini` ALSO returns the
+    template here: the LLM call is dispatched OUT OF BAND from
+    `services/scorer/scoring.py` (never in the scoring hot path), and on
+    success it replaces the incident's narrative asynchronously. So this
+    synchronous call site -- the eval path, any offline run, and
+    `NARRATOR_ENABLED=false` -- always takes the template, with no code change
+    at the caller.
     """
     backend = os.environ.get("NARRATOR_BACKEND", "template")
-    if backend != "template":
-        raise NotImplementedError(
-            f"NARRATOR_BACKEND={backend!r} is not implemented before Day 8; use 'template'"
-        )
-    return render(bundle)
+    if backend in ("template", "gemini"):
+        return render(bundle)
+    raise NotImplementedError(f"NARRATOR_BACKEND={backend!r} is not a known backend")

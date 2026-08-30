@@ -534,6 +534,17 @@ def main() -> None:
     render(runs, out_path=out_path, seeds_used=max(1, args.seeds), base_seed=args.seed)
     print(f"wrote {out_path}")
 
+    # Source: Day-8 Plan Step 4 -- the committed, machine-readable D6 artifact.
+    # Unconditional (no new CLI flag); .gitignore carries a `!eval/outputs/d6.json`
+    # exception so it is tracked. D6Metrics.jsx static-imports this file and does
+    # zero runtime computation.
+    from eval.d6 import write_artifact
+
+    d6_path = write_artifact(
+        runs, args.out / "d6.json", seeds_used=max(1, args.seeds), base_seed=args.seed
+    )
+    print(f"wrote {d6_path}")
+
     if args.write_eval_run:
         if args.corpus_db is None:
             raise SystemExit("--write-eval-run requires --corpus-db")

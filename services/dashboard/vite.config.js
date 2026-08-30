@@ -10,6 +10,10 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5174,
+    // Day 8, Step 4 -- D6Metrics.jsx build-time `import`s eval/outputs/d6.json
+    // from the repo root, above this app's own directory. No fetch, no runtime
+    // data path (App Flow v2 SS5 D6: "Static render. No live computation").
+    fs: { allow: ["..", "../.."] },
     proxy: {
       "/v1": {
         target: "http://localhost:8080",
