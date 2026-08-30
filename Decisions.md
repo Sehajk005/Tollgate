@@ -2796,3 +2796,407 @@ same commit").
 
 ### Implementation impact
 `eval/corpus.py`, `eval/harness.py`, `eval/scorers.py`, `README.md`.
+
+---
+
+## Gate G: Day 6 — "Layer 2 + Policy" (29 August 2026)
+
+Decisions 70–85 were made while implementing the Day-6 plan
+(`08-DAY-6-IMPLEMENTATION-PLAN.md`): Layer 2a (Poisson CUSUM), Layer 2b
+(distinct-card sequential drift), the incident episode state machine, entity
+resolution, the cost-derived policy engine, and their guarded integration
+into the single `score_attempt()` path. Recorded per Impl Plan §7/§9.
+Decisions 70–82 are the plan's own D1–D13; 83–85 are refinements made during
+the build.
+
+---
+
+## Decision 70: tau_flag = theta_throttle, derived from the cost model, never a literal
+
+### Context
+Layer 2a gates its per-bucket count on `p_calibrated >= tau_flag`. No document
+assigns tau_flag a value; Decision 45 deferred it to Day 6.
+
+### Decision
+`tau_flag = CostModel.tier_ladder()["throttle"]` (~0.0647) — the posterior at
+which acting is already cost-justified. It ties Layer 2a to the same cost
+model as the policy ladder and moves automatically if `config/cost_model.yaml`
+changes. `config/policy.yaml: cusum.tau_flag_source: "theta_throttle"` records
+the derivation; the value is never written as a literal. `packages/detect/`
+imports no `eval` — the serving path reads `PolicySnapshot.thresholds["throttle"]`
+(a JSON column populated at seed/tune time), so the label-isolation scan stays green.
+
+### Specification impact
+None — implements TRD §6.5 / Decision 45's deferral.
+
+### Implementation impact
+`config/policy.yaml`, `scripts/{tune_cusum,learn_store_baseline}.py`,
+`services/scorer/deps.py::_load_layer2`, `packages/detect/layer2.py`.
+
+---
+
+## Decision 71: n_t gating and S_t are maintained in-process on ScorerState; the Lua counter is unchanged
+
+### Context
+`p_calibrated` does not exist when `windows.lua` step 6 increments the raw
+bucket counter, and a second Redis write would break the one-round-trip
+invariant (`test_one_round_trip.py`) and the p99 < 5 ms budget.
+
+### Decision
+The tau_flag-gated count and `S_t` live in `Layer2Engine` on `ScorerState`,
+exactly as `ThreatRollup` already does. `ScorePathSnapshot.cusum_bucket_index`
+(computed, returned, previously dropped) is plumbed onto `FeatureVector` and
+used as the bucket key; the raw Lua `cusum_bucket_count` is left untouched as
+a cross-check only. **Stated limitation:** CUSUM/incident state is
+per-process — it does not survive restart or span multiple Uvicorn workers.
+The Redis-backed `tg:{m}:cusum` that Backend Schema §4 describes is deferred.
+
+### Specification impact
+None — resolves Decision 45's open "where is n_t counted" question.
+
+### Implementation impact
+`packages/features/compute.py` (`FeatureVector` fields, 11th window),
+`packages/detect/{cusum,layer2}.py`, `services/scorer/scoring.py`.
+
+---
+
+## Decision 72: ARL0 target = 8,640 buckets (<= 1 false alarm per merchant per 24 virtual hours)
+
+### Context
+`scripts/tune_cusum.py` needs a numeric target; no document states one.
+
+### Decision
+ARL0 >= 8,640 buckets = 24 virtual hours at the 10 s bucket width, recorded
+in `config/policy.yaml: cusum.target_arl0_buckets` as an operator-facing SLO.
+The tuner bisects `h` for **zero false alarms across the 7 negative-control
+runs** and additionally validates against synthetic Poisson(lam0_bar) noise for
+ARL0 >= target. `test_cusum_analytic.py` re-checks the analytic ARL0 at the
+configured `h` on fresh noise. **Stated limitation:** the negative-control
+runs total ~3,500 buckets, so they can only *lower-bound* ARL0; the synthetic
+noise check carries the 8,640 claim.
+
+### Specification impact
+None — implements TRD §6.5 "tuned on negative controls only to hit a target ARL0".
+
+### Implementation impact
+`config/policy.yaml`, `scripts/tune_cusum.py`, `tests/acceptance/test_cusum_analytic.py`.
+
+---
+
+## Decision 73: Layer 2b = a one-sided Wald SPRT on 95th-percentile exceedance of distinct_cards_per_ip_30m
+
+### Context
+TRD §6.6 names L2b as the instrument for low-and-slow and gives the shape
+("sequential test on distinct card hashes per entity over 30 virtual minutes,
+scored as a quantile against the store's learned distribution") but not the
+statistic, the firing quantile, or the threshold.
+
+### Decision
+Per entity (`ip`, `ipua` — never `bin`, never `asn`), per attempt:
+`z_i = 1[distinct_cards_per_ip_30m >= q_hi]`, `q_hi` = the store's learned 95th
+percentile. Under H0 the exceedance rate is `p0 = 0.05` by construction of the
+quantile; under H1 `p1 = 0.5`. `Lam_i = max(0, Lam_{i-1} + z_i*ln(p1/p0) +
+(1-z_i)*ln((1-p1)/(1-p0)))`; fire when `Lam >= A = ln((1-beta)/alpha) ~ 4.55`.
+Parameters in `config/policy.yaml: drift.*`, including `drift.enabled` — the
+§9 cut switch.
+
+### Specification impact
+None — implements TRD §6.6.
+
+### Implementation impact
+`config/policy.yaml`, `packages/detect/drift.py`, `packages/detect/layer2.py`,
+`tests/unit/test_drift_sprt.py`, `tests/acceptance/test_metamorphic.py`.
+
+---
+
+## Decision 74: store_baseline.cards_per_ip_quantiles carries {"5m": ..., "30m": ...}
+
+### Context
+L2b needs a 30-minute baseline; the schema comment names only "JSON deciles".
+
+### Decision
+The column carries an 11-point quantile grid (q = 0.0 ... 1.0) for BOTH the
+5 m and 30 m windows, keyed by width. The table had 0 rows, so there is no
+compatibility cost. `packages/detect/baseline.py::StoreBaseline.card_quantile`
+interpolates.
+
+### Specification impact
+None — the schema comment is widened, not the columns.
+
+### Implementation impact
+`scripts/learn_store_baseline.py`, `packages/detect/baseline.py`,
+`packages/storage/repository.py::load_store_baseline`.
+
+---
+
+## Decision 75: the 30 m distinct-card window is an 11th WindowRequest in the same score_path() call
+
+### Context
+`compute_features` builds ten windows; L2b needs `distinct_cards_per_ip_30m`,
+which does not exist. TRD §6.4 forbids a second feature-computation path.
+
+### Decision
+`w("ip", ctx.ip, "card", ctx.card_hash, WINDOW_30M_MS)` is appended at index
+10 of the existing `windows` tuple — one round trip preserved
+(`test_one_round_trip.py`), no positional index shifted. Surfaced as a new
+defaulted `FeatureVector.distinct_cards_per_ip_30m_raw`, **not** in
+`FEATURE_NAMES` and **not** in `snapshot()` — the same pattern Decision 17
+established for `distinct_cards_per_ip_5m_raw`. The Day-5 model contract and
+`attempt_score.feature_snapshot` are byte-identical (verified: the rebuilt
+corpus's `attempt_score` digest is unchanged).
+
+### Specification impact
+None.
+
+### Implementation impact
+`packages/features/compute.py`.
+
+---
+
+## Decision 76: hysteresis_gap maps to T_exit = T_enter - 0.08
+
+### Context
+TRD §6.7 gives `hysteresis_gap = 0.08` and "enter at T_enter, exit below
+T_exit < T_enter" but never connects them.
+
+### Decision
+Rise to tier T requires `p >= theta_T`; fall below T requires `p < theta_T -
+hysteresis_gap`. Applied only to the score-driven Layer-2 tier — R1-R3 floors
+are unconditional (Decision 17) and are max'd in afterwards. An oscillation
+inside `[theta_T - gap, theta_T]` produces exactly one tier change
+(`test_hysteresis.py`).
+
+### Specification impact
+None — implements TRD §6.7.
+
+### Implementation impact
+`packages/detect/policy.py::PolicyEngine._apply_hysteresis`.
+
+---
+
+## Decision 77: K_max = the scalar policy_config.k_max_entities (10)
+
+### Context
+Threat Model §4/P2's `max(10, 1% of distinct active entities in 30m)` needs an
+active-entity-count statistic nothing computes.
+
+### Decision
+Advisory mode engages when the count of distinct entities with a live
+enforced incident reaches `policy_config.k_max_entities`. On the hot path this
+count comes from the in-process `IncidentRegistry`
+(`read_active_enforcement_count` is a DB reader for tests/reporting only). In
+advisory mode the engine stops issuing NEW enforcement on NEW entities, keeps
+scoring, keeps entities already enforced, and sets `enforcement.advisory_mode`
+on the SSE stream. The 1%-of-active-entities form is future work.
+
+### Specification impact
+None — Threat Model §4/P2's `max(10, ...)` second term deferred.
+
+### Implementation impact
+`packages/detect/policy.py`, `packages/detect/episode.py`,
+`services/scorer/scoring.py`, `services/dashboard/src/App.jsx`,
+`tests/acceptance/test_blast_radius.py`.
+
+---
+
+## Decision 78: control arm = deterministic one-per-block-of-20 selection, seeded on merchant_id + policy_version
+
+### Context
+The acceptance test says "exactly `control_fraction`"; Eval Protocol §6.1 says
+"seeded random". Independent Bernoulli draws satisfy the second, not the first.
+
+### Decision
+For each consecutive block of `N = round(1/control_fraction) = 20`
+enforcement-eligible attempts, one position `j = int(sha256(f"{merchant_id}:
+{policy_version}:{block}").hexdigest()[:16], 16) % N` is the control. Exactly
+one per block (so exactly 5 % up to the trailing partial block), seeded,
+bit-for-bit reproducible. The eligible-attempt ordinal is an in-process
+per-merchant counter cleared by `ReplayDriver.reset()`. No new seed column.
+
+### Specification impact
+None — implements Eval Protocol §6.1.
+
+### Implementation impact
+`packages/detect/policy.py` (`is_control_ordinal`, `PolicyEngine`),
+`services/scorer/scoring.py`, `tests/acceptance/test_control_arm.py`.
+
+---
+
+## Decision 79: control-arm and advisory-mode attempts pass unenforced past the R1-R3 floors
+
+### Context
+Decision 17 says the rule floors are unconditional. But an attempt still
+challenged by R2 is not a control at all — Eval Protocol §6.1's unbiasedness
+claim would be false.
+
+### Decision
+A control attempt and an advisory-mode attempt return `in_force_tier = allow`
+and write **no** `enforcement_action` row, including past the R1-R3 floors.
+Both are narrow, seeded, logged carve-outs (`attempt_score.control_arm`,
+`enforcement.advisory_mode`), not a weakening of the floors in general.
+
+### Specification impact
+Tension with Decision 17, resolved in the control arm's favour for these two
+narrow cases.
+
+### Implementation impact
+`packages/detect/policy.py::PolicyEngine.resolve`, `services/scorer/scoring.py`.
+
+---
+
+## Decision 80: store_baseline feeds packages/detect/ only, never compute_features
+
+### Context
+`store_baseline` gives quantiles and hourly volume. Wiring it into
+`compute_features` would populate `distinct_cards_per_ip_5m_q`,
+`amount_percentile_vs_store` and the `*_sigma` features.
+
+### Decision
+The row is consumed only by `packages/detect/` (Layer 2). `compute_features`
+is untouched — the `_q` / `*_sigma` features stay at their neutral 0.0.
+Populating them would change the model's inputs and invalidate `models/`,
+`models/audit.json` and every `eval_run` row. Reinstating them is Decision
+16/64's deferred work.
+
+### Specification impact
+None.
+
+### Implementation impact
+`scripts/learn_store_baseline.py` (explicit scope comment), no change to
+`packages/features/compute.py`'s value computation.
+
+---
+
+## Decision 81: ThreatRollup is retained as the no-policy fallback; incident state drives threat_state when Layer 2 is live
+
+### Context
+The D1 threat band renders `event.threat_state` verbatim (Decision 33). Day 6
+replaces `ThreatRollup` (Decision 33 named today as its replacement point)
+but the Day-5 corpus replay and `test_day2_e2e.py` build states with no policy.
+
+### Decision
+When a policy is attached, `threat_state` is
+`IncidentRegistry.worst_threat_state()` (max over live incidents:
+`none/CLOSED -> calm`, `OPEN -> elevated`, `ESCALATED -> under_attack`,
+`COOLING -> resolved`). When no policy is attached, `ThreatRollup` is the
+fallback, unchanged. The four strings and the SSE key are unchanged, so
+`App.jsx`, `test_day2_e2e.py` and the byte-identical Day-5 corpus replay all
+hold.
+
+### Specification impact
+None — Decision 33's replacement, done as Decision 33 anticipated.
+
+### Implementation impact
+`packages/detect/episode.py`, `services/scorer/scoring.py`.
+
+---
+
+## Decision 82: two CHECK constraints added to schema.sql on entity_type / entity_key
+
+### Context
+TRD §6.7: entity-scoped enforcement is "enforced in the schema, not just in
+code". Code-only was not enough.
+
+### Decision
+`CHECK (entity_type IN ('ip','ipua','bin','card'))` and
+`CHECK (length(entity_key) > 0)` on both `enforcement_action` and
+`incident_entity`. `episode_truth.scenario` already precedents a repo-added
+CHECK the spec doc does not carry. Because `schema.sql` uses `CREATE TABLE IF
+NOT EXISTS`, existing DBs do not pick it up — `tollgate.db` and
+`data/corpus/tollgate.db` are gitignored and were rebuilt. `EntityKey`'s
+`__post_init__` enforces the same invariant in code; `PolicyOutcome.entity:
+EntityKey` is not Optional — store-wide enforcement is unrepresentable.
+
+### Specification impact
+`schema.sql` gains two CHECK constraints beyond Backend Schema v2's text.
+
+### Implementation impact
+`schema.sql`, `packages/detect/policy.py::EntityKey`,
+`tests/acceptance/test_entity_required.py`. Both DBs rebuilt.
+
+---
+
+## Decision 83: the store baseline's flagged_rate_mean (p_bar_0) is learned under the SERVING scoring regime
+
+### Context
+Day-6 Plan §3.7 defines `flagged_rate_mean` as "the share of attempts with
+`score_calibrated >= tau_flag`". The evaluation corpus is scored model-less
+(rules-only `rule_score`), whose floor of ~1/15 clears tau_flag ~0.0647 for
+essentially every attempt -> p_bar_0 ~ 1.0. The live service loads the
+Layer-1 model, so its realised flag rate is far lower; a p_bar_0 of 1.0
+inflates lam0 so badly that Layer 2a never accumulates.
+
+### Decision
+`scripts/learn_store_baseline.py` re-scores each negative-control attempt's
+`feature_snapshot` through the SAME Layer-1 model + Platt calibrator the
+serving path uses (when `models/` is loadable), and computes p_bar_0 from that.
+With the weak Day-5 model p_bar_0 lands at ~0.60 — still high, because the
+model runs on only four live features (Decision 64) and is barely
+discriminative. **Stated consequence:** Layer 2a is conservative in the demo
+and, in practice, does not fire on the simulator's `easy` / `medium` tiers
+(which are card-fan-out shaped, not volume-surge shaped) or on `hard` (empty
+buckets). **Layer 2b is the operative Layer-2 detector for `easy` and
+`medium`;** `hard` is undetected by Layer 2 and is reported as such (Day-6
+Plan §8 risk 2). In a rules-only deployment (no `models/`) or with a stronger
+model, Layer 2a would be materially more sensitive.
+
+### Specification impact
+Refines Day-6 Plan §3.7's literal "`score_calibrated`" to "the serving-regime
+`p_calibrated`", so p_bar_0 is regime-consistent.
+
+### Implementation impact
+`scripts/learn_store_baseline.py`, README limitations section.
+
+---
+
+## Decision 84: P3 corroboration operates on rule-fire feature families
+
+### Context
+Threat Model §4/P3 requires Layer-2-driven enforcement above `monitor` to
+carry evidence from >= 2 independent feature families across >= 2 CUSUM
+buckets. The Day-6 Plan §3.6.3 maps `FEATURE_NAMES` -> `{velocity,
+bin_structure, amount, decline_composition}`, but the `_q` / `*_sigma` /
+decline features are all neutral 0.0 today (Decision 16/64, /v1/outcome is
+Day 7), so a feature-level check has almost no signal to read.
+
+### Decision
+A family "contributed non-neutral evidence in bucket b" iff an R1-R3 rule
+mapping to that family fired on an attempt in bucket b (`RULE_FAMILY`: R1/R2
+-> `velocity`, R3 -> `bin_structure`). The incident tracks
+`families_by_bucket`; corroboration requires >= 2 distinct families across
+>= 2 distinct buckets. This uses only provenanced signals and no new
+thresholds. The full `FEATURE_NAMES -> family` map ships as `FEATURE_FAMILY`
+for when those features are reinstated. **Stated limitation:** P3's ">= 2
+buckets" is enforced in memory and is not reconstructable from the DB — no
+column records it (Day-6 Plan §8 risk 4).
+
+### Specification impact
+Narrows Day-6 Plan §3.6.3's feature-level check to a rule-family check until
+the deferred features land.
+
+### Implementation impact
+`packages/detect/policy.py` (`FEATURE_FAMILY`, `RULE_FAMILY`,
+`families_from_rules`), `packages/detect/episode.py::Incident.corroborated`.
+
+---
+
+## Decision 85: the seam resolves the enforcement entity from which rules fired
+
+### Context
+`score_attempt` must resolve an `EntityKey` before Layer 2 runs, but the
+narrowest scope depends on which detector fires — a circularity.
+
+### Decision
+The scope is chosen up front from `evaluation.fired_names`: `bin` when R3
+(`distinct_cards_per_bin_5m`) is the ONLY rule that fired (issuer-wide
+geometry), otherwise `ip` (the source — where the CUSUM's store-rate evidence
+and L2b's per-IP fan-out both point). `resolve_entity` then narrows within
+that scope (`card -> ipua -> ip`). Deterministic and C-class-free
+(`resolve_entity` takes only S/M fields as arguments).
+
+### Specification impact
+None — implements Day-6 Plan §3.5's "narrowest key that covers the evidence"
+with a concrete, deterministic scope rule.
+
+### Implementation impact
+`services/scorer/scoring.py::_resolve_layer2`.

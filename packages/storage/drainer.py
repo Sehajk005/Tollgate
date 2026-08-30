@@ -26,7 +26,14 @@ from typing import Optional
 
 from packages.contracts.records import AttemptRecord, ScoreRecord
 from packages.storage.db import connect
-from packages.storage.repository import insert_attempt, insert_score
+from packages.storage.repository import (
+    insert_attempt,
+    insert_enforcement_action,
+    insert_score,
+    insert_tier_transition,
+    upsert_incident,
+    upsert_incident_entity,
+)
 
 
 class Drainer:
@@ -60,7 +67,19 @@ class Drainer:
                         data = json.loads(line)
                         payload = data["payload"]
                         insert_attempt(conn, AttemptRecord(**payload["attempt"]))
+                        # Day-6 Plan §3.4 -- the incident row (and its
+                        # entities) must land before attempt_score, whose
+                        # incident_id is an FK onto incident.
+                        if "incident" in payload:
+                            upsert_incident(conn, payload["incident"])
+                            for entity_row in payload.get("incident_entity", []):
+                                upsert_incident_entity(conn, entity_row)
                         insert_score(conn, ScoreRecord(**payload["score"]))
+                        if "incident" in payload:
+                            for transition_row in payload.get("tier_transition", []):
+                                insert_tier_transition(conn, transition_row)
+                            for action_row in payload.get("enforcement", []):
+                                insert_enforcement_action(conn, action_row)
                         count += 1
                     self._offset = fh.tell()
             conn.commit()

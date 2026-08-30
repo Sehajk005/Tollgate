@@ -163,6 +163,18 @@ class FeatureVector:
     # Source: Decision 17 -- R2's rule floor reads the raw absolute count,
     # not the quantile-transformed model feature. See module docstring.
     distinct_cards_per_ip_5m_raw: float = 0.0
+    # Source: Day-6 Plan §3.2 / D6 -- L2b's required input, an 11th window in
+    # the SAME score_path() round trip. Surfaced here (defaulted, like
+    # distinct_cards_per_ip_5m_raw), NOT in FEATURE_NAMES and NOT in
+    # snapshot(), so the 24-feature model contract and the training corpus
+    # are byte-identical to Day 5.
+    distinct_cards_per_ip_30m_raw: float = 0.0
+    # Source: Day-6 Plan §3.1 -- windows.lua step 6 / the in-memory
+    # score_path compute the CUSUM bucket index/count and return them across
+    # the protocol boundary; Day 3-5 dropped them on the floor. Plumbed
+    # through here for Layer 2a. Also NOT in snapshot() / FEATURE_NAMES.
+    cusum_bucket_index: int = 0
+    cusum_bucket_count: int = 0
 
     def snapshot(self) -> dict:
         data: dict = dict(self.values)
@@ -204,6 +216,10 @@ def compute_features(store: WindowStore, ctx: FeatureContext) -> FeatureVector:
         w("session", session_key, "ev", ctx.attempt_uid, WINDOW_30M_MS),                             # 7: attempts_per_session
         w("ip", ctx.ip, "bindist", f"{ctx.bin}|{ctx.attempt_uid}", WINDOW_5M_MS, read="members"),    # 8: bin_hhi/entropy
         w("ip", ctx.ip, "amt", str(ctx.amount_minor), WINDOW_5M_MS),                                 # 9: distinct_amounts_per_ip_5m
+        # Source: Day-6 Plan §3.2 / D6 -- L2b's distinct_cards_per_ip_30m,
+        # appended at index 10 so no existing positional index shifts and the
+        # round trip stays at exactly one score_path() call.
+        w("ip", ctx.ip, "card", ctx.card_hash, WINDOW_30M_MS),                                        # 10: distinct_cards_per_ip_30m (raw)
     )
 
     # Source: Threat Model v2 §3 point 2 -- the idempotency key is
@@ -285,4 +301,7 @@ def compute_features(store: WindowStore, ctx: FeatureContext) -> FeatureVector:
         stored_attempt_uid=snap.stored_attempt_uid,
         baseline_coverage=0.0,
         distinct_cards_per_ip_5m_raw=float(counts[3]),
+        distinct_cards_per_ip_30m_raw=float(counts[10]),
+        cusum_bucket_index=int(snap.cusum_bucket_index),
+        cusum_bucket_count=int(snap.cusum_bucket_count),
     )

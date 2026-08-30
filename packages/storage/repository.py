@@ -7,14 +7,24 @@ value across a restart (attempt_uid, a server-minted ULID) so the drainer's
 replay-from-byte-0 recovery path (packages/storage/drainer.py) is always
 idempotent, never duplicating a row already committed before a kill
 (Backend Schema v2.1 §1, decisions 7-8).
+
+Day-6 Plan §3.4 -- the incident / entity / transition / enforcement writers
+and the policy_config / store_baseline readers. The incident row is an
+UPSERT (its state changes over the incident's life); transitions and
+enforcement rows carry deterministic ids, so INSERT OR IGNORE keeps the
+drainer's byte-0 re-drain idempotent -- the incident's final state is
+re-derived by replaying its (ordered) transitions.
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
+from typing import Optional
 
 from packages.contracts.records import AttemptRecord, ScoreRecord
+from packages.detect.baseline import StoreBaseline
+from packages.detect.policy import PolicySnapshot
 
 
 def insert_attempt(conn: sqlite3.Connection, record: AttemptRecord) -> None:
@@ -111,3 +121,150 @@ def get_latest_policy_version(conn: sqlite3.Connection, merchant_id: str) -> int
         (merchant_id,),
     ).fetchone()
     return row["v"]
+
+
+# ---------------------------------------------------------------------------
+# Day-6 Plan §3.4 -- incident / entity / transition / enforcement writers
+# ---------------------------------------------------------------------------
+
+_INCIDENT_COLS = (
+    "incident_id", "merchant_id", "state", "detector", "opened_at", "escalated_at",
+    "cooling_at", "closed_at", "peak_tier", "attempts_total", "attempts_before_alert",
+    "cards_exposed_before_alert", "time_to_detect_s", "cusum_stat_at_alert", "decline_mix",
+    "narrative", "narrative_source", "recommended_tier", "resolution", "resolved_by",
+    "pinned_policy_version",
+)
+
+
+def upsert_incident(conn: sqlite3.Connection, row: dict) -> None:
+    """State changes over an incident's life, so this is ON CONFLICT DO
+    UPDATE, not INSERT OR IGNORE. The drainer's byte-0 re-drain replays every
+    spool line in order, so the last write wins -- which is the final state."""
+    placeholders = ", ".join("?" for _ in _INCIDENT_COLS)
+    updates = ", ".join(f"{c}=excluded.{c}" for c in _INCIDENT_COLS if c != "incident_id")
+    conn.execute(
+        f"INSERT INTO incident ({', '.join(_INCIDENT_COLS)}) VALUES ({placeholders}) "
+        f"ON CONFLICT(incident_id) DO UPDATE SET {updates}",
+        tuple(row.get(c) for c in _INCIDENT_COLS),
+    )
+
+
+_ENTITY_COLS = (
+    "incident_id", "entity_type", "entity_key", "pseudonym", "attempt_count",
+    "first_seen", "last_seen",
+)
+
+
+def upsert_incident_entity(conn: sqlite3.Connection, row: dict) -> None:
+    placeholders = ", ".join("?" for _ in _ENTITY_COLS)
+    updates = ", ".join(
+        f"{c}=excluded.{c}" for c in _ENTITY_COLS
+        if c not in ("incident_id", "entity_type", "entity_key")
+    )
+    conn.execute(
+        f"INSERT INTO incident_entity ({', '.join(_ENTITY_COLS)}) VALUES ({placeholders}) "
+        f"ON CONFLICT(incident_id, entity_type, entity_key) DO UPDATE SET {updates}",
+        tuple(row.get(c) for c in _ENTITY_COLS),
+    )
+
+
+def insert_tier_transition(conn: sqlite3.Connection, row: dict) -> None:
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO tier_transition (
+            transition_id, incident_id, from_tier, to_tier, trigger, signal_value, at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            row["transition_id"], row["incident_id"], row.get("from_tier"), row["to_tier"],
+            row["trigger"], row.get("signal_value"), row["at"],
+        ),
+    )
+
+
+def insert_enforcement_action(conn: sqlite3.Connection, row: dict) -> None:
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO enforcement_action (
+            action_id, incident_id, merchant_id, entity_type, entity_key, tier,
+            requires_confirmation, confirmed_by, applied_at, expires_at, released_at, applied_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            row["action_id"], row.get("incident_id"), row["merchant_id"], row["entity_type"],
+            row["entity_key"], row["tier"], int(bool(row.get("requires_confirmation"))),
+            row.get("confirmed_by"), row.get("applied_at"), row["expires_at"],
+            row.get("released_at"), row.get("applied_by", "auto"),
+        ),
+    )
+
+
+def read_active_enforcement_count(conn: sqlite3.Connection, merchant_id: str) -> int:
+    """Distinct (entity_type, entity_key) with an unreleased enforcement_action
+    -- the K_max blast-radius count (Threat Model §4/P2). Not on the hot path:
+    the serving path uses the in-process IncidentRegistry count; this reader
+    is for tests and reporting."""
+    row = conn.execute(
+        """
+        SELECT COUNT(DISTINCT entity_type || ':' || entity_key) AS c
+        FROM enforcement_action
+        WHERE merchant_id = ? AND released_at IS NULL
+        """,
+        (merchant_id,),
+    ).fetchone()
+    return row["c"]
+
+
+# ---------------------------------------------------------------------------
+# Day-6 Plan §3.4 -- policy_config / store_baseline readers
+# ---------------------------------------------------------------------------
+
+
+def load_policy_config(
+    conn: sqlite3.Connection, merchant_id: str, version: Optional[int] = None
+) -> Optional[PolicySnapshot]:
+    """Read one policy_config version (the latest when `version` is None) as
+    a frozen PolicySnapshot. Returns None when the merchant has no row."""
+    if version is None:
+        row = conn.execute(
+            "SELECT * FROM policy_config WHERE merchant_id = ? ORDER BY version DESC LIMIT 1",
+            (merchant_id,),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT * FROM policy_config WHERE merchant_id = ? AND version = ?",
+            (merchant_id, version),
+        ).fetchone()
+    if row is None:
+        return None
+    return PolicySnapshot(
+        version=int(row["version"]),
+        thresholds=json.loads(row["thresholds"] or "{}"),
+        hysteresis_gap=float(row["hysteresis_gap"]),
+        cooldown_seconds=int(row["cooldown_seconds"]),
+        cusum_rho=float(row["cusum_rho"]),
+        cusum_h=float(row["cusum_h"]),
+        cusum_bucket_s=int(row["cusum_bucket_s"]),
+        drift_window_s=int(row["drift_window_s"]),
+        allow_auto_block=bool(row["allow_auto_block"]),
+        auto_ceiling=str(row["auto_ceiling"]),
+        k_max_entities=int(row["k_max_entities"]),
+        control_fraction=float(row["control_fraction"]),
+        rules_config=json.loads(row["rules_config"] or "{}"),
+    )
+
+
+def load_store_baseline(conn: sqlite3.Connection, merchant_id: str) -> Optional[StoreBaseline]:
+    row = conn.execute(
+        "SELECT * FROM store_baseline WHERE merchant_id = ?", (merchant_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    return StoreBaseline(
+        merchant_id=merchant_id,
+        hourly_volume_profile=tuple(json.loads(row["hourly_volume_profile"] or "[]")),
+        flagged_rate_mean=float(row["flagged_rate_mean"]),
+        cards_per_ip_quantiles=json.loads(row["cards_per_ip_quantiles"] or "{}"),
+        is_stable=bool(row["is_stable"]),
+        sample_count=int(row["sample_count"]),
+    )

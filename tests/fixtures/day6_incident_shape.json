@@ -1,0 +1,50 @@
+{
+  "enforcement": [
+    {
+      "requires_confirmation": 1,
+      "tier": "block",
+      "unapplied": 1,
+      "unconfirmed": 1
+    },
+    {
+      "requires_confirmation": 0,
+      "tier": "challenge",
+      "unapplied": 0,
+      "unconfirmed": 0
+    }
+  ],
+  "entity_types": [
+    "ip"
+  ],
+  "incident": [
+    {
+      "attempts_before_alert": 2,
+      "attempts_total": 58,
+      "cards_exposed_before_alert": 2,
+      "detector": "both",
+      "peak_tier": "block",
+      "pinned_policy_version": 1,
+      "state": "ESCALATED"
+    }
+  ],
+  "n_attempt_score_with_incident": 58,
+  "n_entities": 1,
+  "n_incidents": 1,
+  "pseudonyms": [
+    "ip_1"
+  ],
+  "transitions": [
+    [
+      null,
+      "monitor"
+    ],
+    [
+      "monitor",
+      "challenge"
+    ],
+    [
+      "challenge",
+      "block"
+    ]
+  ]
+}
