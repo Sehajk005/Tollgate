@@ -82,7 +82,10 @@ class TestEvalRunRow:
         assert row["artifacts_path"]
 
         metrics = json.loads(row["metrics"])
-        assert set(metrics["per_tier"].keys()) == {"easy", "medium", "hard"}
+        # Day-7 Plan §5 AUTHORIZED EDIT 2: Tier E converged, so every eval_run
+        # metrics block now carries an `evasive` per-tier entry (sourced from
+        # the dedicated tier_e split, never mixed into temporal_test).
+        assert set(metrics["per_tier"].keys()) == {"easy", "medium", "hard", "evasive"}
         prevs = {}
         for tier, tm in metrics["per_tier"].items():
             assert tm is not None, f"per-tier metrics missing for {tier}"

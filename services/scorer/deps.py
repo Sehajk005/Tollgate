@@ -40,12 +40,23 @@ if TYPE_CHECKING:
     from packages.detect.layer2 import Layer2Engine
     from packages.detect.model import Layer1Model
     from packages.detect.policy import PolicyEngine, PolicySnapshot
+    from services.scorer.admission import AdmissionController, AvailabilityMonitor
     from services.scorer.replay import ReplayDriver
 
 DEFAULT_MODEL_DIR = Path("models")
 DEFAULT_POLICY_YAML = Path("config/policy.yaml")
 
 DEFAULT_PRIOR_STEADY_STATE = 0.001
+# Source: Day-7 Plan §4 Step 2 -- the in-process stored-decision cache is a
+# bounded FIFO keyed by idem_digest. Decision 71's precedent: hot-path state
+# lives in-process on ScorerState, never as a second Redis write, so TRD
+# §6.3's one-round-trip invariant and the p99 < 5 ms budget both hold. The
+# single-worker limitation is the one Decision 71 already accepts.
+DECISION_CACHE_MAX = 10_000
+# Source: Day-7 Plan §4 Step 4 -- Redis socket timeout / connect timeout so a
+# dead backend raises promptly and the route wrapper fails open inside the
+# budget. The acceptance test measures wall clock (§12 trap 7).
+FAIL_OPEN_BUDGET_MS = 150
 # Source: Day-2 Plan §G / scripts/seed_merchant.py -- Day 2 is single-merchant
 # demo scope; the replay driver always scores against the one seeded demo
 # merchant (matches scripts/seed_merchant.py's MERCHANT_ID).
@@ -101,6 +112,25 @@ class ScorerState:
     # once (then cached) on first miss. `default_factory=dict` so bare
     # ScorerState(...) constructions are unaffected.
     policy_versions: dict = field(default_factory=dict)
+    # Source: Day-7 Plan §4 Step 2 -- {idem_digest: (attempt_uid,
+    # decision_value)}, written after a decision resolves. On an idempotent
+    # replay (SET NX found the key) the stored pair is returned and the spool
+    # append is skipped -- no duplicate auth_attempt / attempt_score row, no
+    # duplicate SSE event. Bounded FIFO (DECISION_CACHE_MAX); a cross-process
+    # or evicted miss falls back to the pre-Day-7 behaviour.
+    decision_cache: dict = field(default_factory=dict)
+    # Source: Day-7 Plan §4 Step 3/4 -- merchant-scoped admission control and
+    # fail-open availability monitoring, in-process (Decision 87). Guarded
+    # exactly like `model` / `policy`: `build_default()` populates them, every
+    # bare ScorerState(...) in tests / eval leaves them None and the route
+    # skips the admission + fail-open rungs (byte-identical to Day 6).
+    admission: Optional["AdmissionController"] = None
+    availability: Optional["AvailabilityMonitor"] = None
+    # Source: Day-7 Plan §4 Step 4 -- {api_key_hash: merchant_id}, populated on
+    # each successful auth. A locked SQLite with a WARM cache still
+    # authenticates (and can then fail-open, merchant-scoped); a COLD cache +
+    # locked DB returns 503 -- auth never fails open (Decision 89).
+    api_key_cache: dict = field(default_factory=dict)
 
     def db_read_conn(self):
         return connect(self.db_path)
@@ -132,7 +162,14 @@ class ScorerState:
 
             from packages.features.redis_store import RedisWindowStore
 
-            client = redis_lib.Redis.from_url(redis_url)
+            # Source: Day-7 Plan §4 Step 4 -- a dead Redis socket must raise
+            # PROMPTLY so the route wrapper can fail open within the budget.
+            # score_path() is a blocking sync call, so asyncio.wait_for cannot
+            # bound it -- the socket timeout IS the mechanism (§12 trap 7).
+            timeout_s = FAIL_OPEN_BUDGET_MS / 1000.0
+            client = redis_lib.Redis.from_url(
+                redis_url, socket_timeout=timeout_s, socket_connect_timeout=timeout_s
+            )
             client.ping()
             logger.info("Connected to Redis at %s; using RedisWindowStore", redis_url)
             return RedisWindowStore(client)
@@ -277,6 +314,19 @@ class ScorerState:
         policy, baseline, layer2, incidents, policy_engine, ttl_ms = ScorerState._load_layer2(
             db_path, DEMO_MERCHANT_ID
         )
+        # Source: Day-7 Plan §4 Step 3/4 -- admission control + fail-open
+        # availability monitoring, from config/policy.yaml's `admission:` block.
+        from services.scorer.admission import (
+            AdmissionController,
+            AvailabilityMonitor,
+            load_admission_config,
+        )
+
+        admission_cfg = load_admission_config()
+        admission = AdmissionController(admission_cfg)
+        availability = AvailabilityMonitor(
+            alert_threshold=admission_cfg.fail_open_alert_threshold
+        )
         state = ScorerState(
             clock=clock, ulid=ulid, window_store=window_store, rules=rules,
             spool=spool, drainer=drainer, event_bus=event_bus, db_path=db_path,
@@ -284,6 +334,7 @@ class ScorerState:
             policy=policy, baseline=baseline, layer2=layer2, incidents=incidents,
             policy_engine=policy_engine, enforcement_ttl_ms=ttl_ms,
             policy_versions={policy.version: policy} if policy is not None else {},
+            admission=admission, availability=availability,
         )
         # Local import: breaks the deps.py <-> replay.py import cycle
         # (replay.py imports ScorerState for its own type hints). By the

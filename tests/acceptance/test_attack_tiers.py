@@ -186,11 +186,17 @@ class TestA10AttackTiersAntiCircularity:
         # exist as declared placeholders (Impl Plan §Day 2, Decision 38's
         # Step 2 elaboration), not silently absent. Day-4 Plan (rev. 2) Step
         # 2 -- THE ONE AUTHORIZED ACCEPTANCE-TEST EDIT: medium is filled in
-        # on Day 4 (no longer pending); evasive stays a Day-7 placeholder.
+        # on Day 4 (no longer pending). Day-7 Plan §5 AUTHORIZED EDIT 1: the
+        # Tier-E config-space search converged, so `evasive` is now populated
+        # and no longer pending; its `source` leaves are checked by
+        # test_every_populated_parameter_has_a_real_source above (A10).
         tiers = _load_attack_tiers()
         assert "medium" in tiers and "evasive" in tiers
         assert "pending" not in tiers["medium"]
-        assert tiers["evasive"].get("pending") == "Day 7"
+        assert "pending" not in tiers["evasive"]
+        for leaf in ("attempts_per_hour", "ip_pool_size", "distinct_cards",
+                     "bin_pool_size", "episode_duration_s"):
+            assert tiers["evasive"][leaf]["value"] is not None, f"evasive.{leaf} still null"
 
     def test_banned_vocabulary_regex_actually_catches_a_planted_fake_source(self):
         assert BANNED_SOURCE_VOCAB.search("synthetic, chosen for the demo")

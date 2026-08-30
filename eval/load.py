@@ -140,6 +140,7 @@ def write_eval_run(
     prior_assumed: float,
     artifacts_path,
     extra_metrics: Optional[dict] = None,
+    tier_e_metrics=None,
 ) -> str:
     """
     Write one `eval_run` row for `report` (an eval.harness.Report). Idempotent:
@@ -175,6 +176,13 @@ def write_eval_run(
         },
         "clean": _tier_metrics_json(report.clean_breakdown),
     }
+    # Source: Day-7 Plan §6 -- `evasive` is added ONLY when Tier E is available
+    # (from the dedicated tier_e split, passed in, or already on this report's
+    # breakdown). A cut Tier E leaves the 3-tier per_tier shape untouched, so
+    # test_eval_run_row.py's unedited form still passes.
+    _evasive_tm = tier_e_metrics if tier_e_metrics is not None else report.tier_breakdown.get("evasive")
+    if _evasive_tm is not None:
+        metrics["per_tier"]["evasive"] = _tier_metrics_json(_evasive_tm)
     if extra_metrics:
         metrics.update(extra_metrics)
 

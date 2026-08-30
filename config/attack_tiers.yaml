@@ -153,15 +153,48 @@ medium:
     source: "Impl Plan v2.1 §Day 4 -- medium's authored episode duration, between easy's 600s and hard's 900s"
 
 evasive:
-  pending: "Day 7"
-  attempts_per_hour: {value: null, pending: "Day 7"}
-  attempts_per_hour_band: {min: null, max: null, pending: "Day 7"}
-  ip_pool_size: {value: null, pending: "Day 7"}
-  distinct_cards: {value: null, pending: "Day 7"}
-  bin_pool_size: {value: null, pending: "Day 7"}
-  foreign_bin_share: {value: null, pending: "Day 7"}
-  amount_sampler: {value: null, pending: "Day 7"}
-  amount_quantile_band: {min: null, max: null, pending: "Day 7"}
-  session_reuse: {value: null, pending: "Day 7"}
-  hour_of_day_placement: {value: null, pending: "Day 7"}
-  episode_duration_s: {value: null, pending: "Day 7"}
+  attempts_per_hour:
+    value: 866
+    unit: attempts_per_hour
+    source: "Eval Protocol v2 §5 -- pacing that keeps mean(score_calibrated) below theta_challenge and opens no incident; converged value of the Tier-E config-space search (seed 42, 200 evaluations)"
+  attempts_per_hour_band:
+    min: 519
+    max: 1386
+    source: "Eval Protocol v2 §5 -- advisory band bracketing the Tier-E converged rate (seed 42, 200 evaluations); jittered-even spacing keeps the recomputed rate inside it"
+  ip_pool_size:
+    value: 77
+    unit: count
+    source: "Eval Protocol v2 §5 -- IP fan-out that keeps attempts_per_ip_60s under R1 threshold; converged value of the Tier-E config-space search (seed 42, 200 evaluations)"
+  distinct_cards:
+    value: 286
+    unit: count
+    source: "Eval Protocol v2 §5 -- stolen-list size the adversary cycles through the merchant; converged value of the Tier-E config-space search (seed 42, 200 evaluations)"
+  bin_pool_size:
+    value: 19
+    unit: count
+    source: "Eval Protocol v2 §5 -- BIN spread that keeps distinct_cards_per_bin_5m under R3 threshold; converged value of the Tier-E config-space search (seed 42, 200 evaluations)"
+  amount_quantile_band:
+    min: 0
+    max: 26
+    unit: permille_of_quantile_table
+    source: "Eval Protocol v2 §4/V2 -- low-tail quantile band shared with the baseline table; Tier-E converged window (seed 42, 200 evaluations)"
+  episode_duration_s:
+    value: 704
+    unit: seconds
+    source: "Eval Protocol v2 §5 -- episode length over which cards_validated_per_hour is maximised; converged value of the Tier-E config-space search (seed 42, 200 evaluations)"
+  foreign_bin_share:
+    value: 900
+    unit: ppm
+    source: "Day-7 Plan §6 -- carried at the hard-tier value; not consumed by generate_attack_episode, so it is not searched (Decision 92)"
+  amount_sampler:
+    value: baseline_low_tail
+    unit: mode
+    source: "Day-7 Plan §6 -- carried at the hard-tier value; not consumed by generate_attack_episode, so it is not searched (Decision 92)"
+  session_reuse:
+    value: 0
+    unit: ppm
+    source: "Day-7 Plan §6 -- carried at the hard-tier value; not consumed by generate_attack_episode, so it is not searched (Decision 92)"
+  hour_of_day_placement:
+    value: 0
+    unit: hour_of_day
+    source: "Day-7 Plan §6 -- carried at the hard-tier value; not consumed by generate_attack_episode, so it is not searched (Decision 92)"

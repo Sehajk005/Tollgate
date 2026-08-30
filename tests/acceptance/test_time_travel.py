@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import random
 
-from eval.corpus import build_runs, load_feature_corpus
+from eval.corpus import build_runs, build_tier_e_runs, load_feature_corpus
 from packages.contracts.records import compute_payload_digest
 from packages.contracts.wire import ScoreRequest
 from packages.features.compute import (
@@ -54,7 +54,16 @@ def _recompute_vector(run, events_prefix) -> tuple:
 
 class TestTimeTravel:
     def test_sampled_snapshots_reproduce_exactly(self, day5_corpus):
-        runs = {r.run_index: r for r in build_runs(SEED)}
+        # Day-7: the shared corpus was APPENDED with the Tier-E run
+        # (Decision 93 / replay_corpus(rebuild=False)); include its generator
+        # so a sampled Tier-E row reproduces from the same compute_features
+        # path -- extends the reproduction check, weakens nothing.
+        all_runs = list(build_runs(SEED))
+        try:
+            all_runs += build_tier_e_runs(SEED)
+        except ValueError:
+            pass  # `evasive` still pending (Tier-E search cut) -- no run 19
+        runs = {r.run_index: r for r in all_runs}
         conn = connect(day5_corpus)
         try:
             corpus = load_feature_corpus(conn)

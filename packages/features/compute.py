@@ -160,6 +160,13 @@ class FeatureVector:
     idempotent_replay: bool
     stored_attempt_uid: Optional[str]
     baseline_coverage: float
+    # Source: Day-7 Plan §4 Step 2 -- the idempotency digest is already
+    # computed here (sha256(merchant || event_id || payload_digest)); surface
+    # it so services/scorer/scoring.py can key its in-process stored-decision
+    # cache off it without re-deriving the hash. Defaulted, like
+    # distinct_cards_per_ip_5m_raw; NOT in snapshot() or FEATURE_NAMES, so the
+    # model contract and the training corpus are byte-identical to Day 6.
+    idem_digest: str = ""
     # Source: Decision 17 -- R2's rule floor reads the raw absolute count,
     # not the quantile-transformed model feature. See module docstring.
     distinct_cards_per_ip_5m_raw: float = 0.0
@@ -300,6 +307,7 @@ def compute_features(store: WindowStore, ctx: FeatureContext) -> FeatureVector:
         idempotent_replay=snap.idempotent_replay,
         stored_attempt_uid=snap.stored_attempt_uid,
         baseline_coverage=0.0,
+        idem_digest=idem_digest,
         distinct_cards_per_ip_5m_raw=float(counts[3]),
         distinct_cards_per_ip_30m_raw=float(counts[10]),
         cusum_bucket_index=int(snap.cusum_bucket_index),

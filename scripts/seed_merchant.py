@@ -34,7 +34,13 @@ def main() -> None:
 
     raw_key = secrets.token_urlsafe(32)
     key_hash = hash_api_key(raw_key)
-    outcome_secret_hash = hash_api_key(secrets.token_urlsafe(32))
+    # Day-7 Plan §4 Step 5 -- the outcome HMAC secret was previously generated
+    # and thrown away. POST /v1/outcome now BINDS TOLLGATE_OUTCOME_SECRET to
+    # this merchant by comparing hash_api_key(secret) against the stored hash,
+    # so the raw secret must be printed once (like the API key) and set in the
+    # scorer's environment as TOLLGATE_OUTCOME_SECRET.
+    raw_outcome_secret = secrets.token_urlsafe(32)
+    outcome_secret_hash = hash_api_key(raw_outcome_secret)
 
     rules_config = yaml.safe_load(RULES_CONFIG_PATH.read_text(encoding="utf-8"))
 
@@ -77,6 +83,10 @@ def main() -> None:
 
     print(f"Merchant seeded: {MERCHANT_ID}")
     print(f"API key (store this; it is not recoverable): {raw_key}")
+    print(
+        "Outcome HMAC secret (store this; it is not recoverable) -- set it as "
+        f"TOLLGATE_OUTCOME_SECRET for POST /v1/outcome: {raw_outcome_secret}"
+    )
     print(f"policy_config version: {next_version}")
 
 

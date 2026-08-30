@@ -13,6 +13,12 @@ and test_metamorphic.py).
 PURE: no I/O, no wall clock, no `eval` import, no label source. `ingest_ms`
 and every parameter arrive as arguments; the registry is cleared by
 `clear()` (wired into ReplayDriver.reset()).
+
+Day-7 Plan §3 R3 / §12 trap 9 -- the caller (`services/scorer/scoring.py::
+_resolve_layer2`) that folds these transitions runs with NO `await` inside
+the block. The 100-concurrent-vs-sequential CUSUM guarantee
+(tests/acceptance/test_concurrent_cusum.py) depends on that; never add an
+`await` to the Layer-2 resolution path.
 """
 
 from __future__ import annotations
@@ -104,6 +110,12 @@ class Incident:
     cusum_stat_at_alert: Optional[float] = None
     resolution: Optional[str] = None
     resolved_by: Optional[str] = None
+    # Source: Day-7 Plan §4 Step 6 -- the incident narrative + its source
+    # ("template" on Day 7; "gemini" is Day 8). Populated at incident-open by
+    # _resolve_layer2 from a build_bundle() -> assemble_prompt() gate ->
+    # template.render() render; the columns already exist (schema.sql:178-179).
+    narrative: Optional[str] = None
+    narrative_source: Optional[str] = None
     # internal bookkeeping (not persisted directly)
     last_fire_ms: int = 0
     cooldown_ms: int = 300_000
@@ -148,8 +160,8 @@ class Incident:
             "time_to_detect_s": self.time_to_detect_s,
             "cusum_stat_at_alert": self.cusum_stat_at_alert,
             "decline_mix": None,
-            "narrative": None,
-            "narrative_source": None,
+            "narrative": self.narrative,
+            "narrative_source": self.narrative_source,
             "recommended_tier": self.peak_tier,
             "resolution": self.resolution,
             "resolved_by": self.resolved_by,

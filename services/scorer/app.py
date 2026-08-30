@@ -19,6 +19,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from services.scorer.deps import ScorerState
+from services.scorer.routes_outcome import router as outcome_router
 from services.scorer.routes_replay import router as replay_router
 from services.scorer.routes_score import router as score_router
 from services.scorer.routes_stream import router as stream_router
@@ -53,6 +54,10 @@ def create_app(state: Optional[ScorerState] = None) -> FastAPI:
     app.include_router(score_router)
     app.include_router(stream_router)
     app.include_router(replay_router)
+    # Day-7 Plan §4 Step 5 -- POST /v1/outcome. Self-guards: without
+    # TOLLGATE_OUTCOME_SECRET the route returns 503 (logged once); the rest of
+    # the service is unaffected.
+    app.include_router(outcome_router)
 
     @app.get("/healthz")
     async def healthz() -> dict:

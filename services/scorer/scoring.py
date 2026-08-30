@@ -50,7 +50,7 @@ from packages.features.compute import (
     compute_features,
     ipua_key,
 )
-from services.scorer.deps import ScorerState
+from services.scorer.deps import DECISION_CACHE_MAX, ScorerState
 
 # Source: config/features.yaml `top_contributors_k` (Day-5 Plan Step 1 -- the
 # value is provenanced there and covered by config_hash; this constant must
@@ -64,6 +64,23 @@ def _top_k_contributors_json(contribs, k: int) -> str:
     feature_contribs = list(zip(FEATURE_NAMES, list(contribs)[: len(FEATURE_NAMES)]))
     ranked = sorted(feature_contribs, key=lambda kv: abs(kv[1]), reverse=True)[:k]
     return json.dumps([{"feature": name, "contribution": round(float(v), 6)} for name, v in ranked])
+
+
+def _remember_decision(
+    state: ScorerState, idem_digest: str, attempt_uid: str, decision_value: str
+) -> None:
+    """Source: Day-7 Plan §4 Step 2 -- record the resolved decision so a later
+    idempotent replay of the same request returns it verbatim. Bounded FIFO:
+    `dict` preserves insertion order, so evicting `next(iter(...))` drops the
+    oldest entry. In-process only (Decision 71's single-worker trade)."""
+    if not idem_digest:
+        return
+    cache = state.decision_cache
+    if idem_digest in cache:
+        return
+    cache[idem_digest] = (attempt_uid, decision_value)
+    if len(cache) > DECISION_CACHE_MAX:
+        del cache[next(iter(cache))]
 
 
 def _action_id(incident_id: str, entity_type: str, entity_key: str, tier: str) -> str:
@@ -113,6 +130,15 @@ def _pinned_snapshot(state: ScorerState, merchant_id: str, version: int):
 def _resolve_layer2(
     state: ScorerState,
     *,
+    # ------------------------------------------------------------------
+    # Day-7 Plan §3 R3 / §12 trap 9 -- THIS BLOCK MUST CONTAIN NO `await`.
+    # Layer-2 concurrency safety (100 concurrent scores == sequential, pinned
+    # by tests/acceptance/test_concurrent_cusum.py) rests entirely on the
+    # whole Layer-2 fold running to completion under the single-threaded
+    # event loop before another coroutine's fold starts. The only await in
+    # score_attempt is the terminal event_bus.publish. Admission control and
+    # the fail-open wrapper stay OUTSIDE this function, in routes_score.py.
+    # ------------------------------------------------------------------
     merchant_id: str,
     ip: str,
     ua_class: str,
@@ -196,6 +222,30 @@ def _resolve_layer2(
             pass
         incident_id = incident.incident_id
         pseudonym = state.incidents.pseudonym(merchant_id, entity)
+
+        # Source: Day-7 Plan §4 Step 6 -- at incident-open ONLY (narrative is
+        # still None), build the narrator EvidenceBundle through the single
+        # admission point, run the input-side charset gate on the assembled
+        # prompt, then render the template narrative onto the incident row via
+        # the existing spool -> drainer path. Deterministic and I/O-free -- not
+        # an LLM call, no latency-budget impact (§12 trap 10). Gemini is Day 8.
+        if incident.narrative is None:
+            try:
+                from packages.narrator.bundle import build_bundle
+                from packages.narrator.prompt import assemble_prompt
+                from packages.narrator.template import render as _render_narrative
+
+                _bundle = build_bundle(
+                    entity_type=entity.entity_type,
+                    pseudonym=pseudonym,
+                    decision=outcome.proposed_tier.value,
+                    evaluation=evaluation,
+                )
+                assemble_prompt(_bundle)  # input-side gate; raises on hostile bytes
+                incident.narrative = _render_narrative(_bundle)["narrative"]
+                incident.narrative_source = "template"
+            except Exception:  # noqa: BLE001 -- gate/vocab failure -> no narrative, never a 500
+                pass
 
         enforcement_rows = []
         if not outcome.control_arm and not outcome.advisory_mode:
@@ -296,6 +346,30 @@ async def score_attempt(
         session_id=body.session_id,
     )
     features = compute_features(state.window_store, feature_ctx)
+
+    # Source: Day-7 Plan §4 Step 2 -- stored-decision replay reply. An
+    # idempotent replay (SET NX found the key) carries no new observation;
+    # compute_features already returned zeros and left every window / the
+    # CUSUM bucket untouched. When this request's decision is still cached
+    # in-process, return the winner's (attempt_uid, decision) verbatim,
+    # skipping the spool append and the SSE publish so no duplicate
+    # auth_attempt / attempt_score row or attempt event is produced. A
+    # cross-process or FIFO-evicted miss falls through to the pre-Day-7 path.
+    if features.idempotent_replay:
+        cached = state.decision_cache.get(features.idem_digest)
+        if cached is not None:
+            stored_uid, stored_decision_value = cached
+            replay_response = ScoreResponse(
+                attempt_uid=stored_uid,
+                decision=Decision(stored_decision_value),
+                latency_ms=active_stopwatch.elapsed_ms(),
+            )
+            return replay_response, {
+                "replayed": True,
+                "attempt_uid": stored_uid,
+                "decision": stored_decision_value,
+            }
+
     evaluation = state.rules.evaluate_from_features(features)
 
     layer2_live = (
@@ -428,6 +502,11 @@ async def score_attempt(
         scored_at=ingest_ms,
     )
 
+    # Source: Day-7 Plan §4 Step 2 -- remember the resolved decision before it
+    # is spooled, so a later idempotent replay of this exact request returns
+    # the same (attempt_uid, decision) without re-scoring or re-spooling.
+    _remember_decision(state, features.idem_digest, attempt_uid, decision.value)
+
     spool_payload = {"attempt": attempt.to_dict(), "score": score_record.to_dict()}
     if day6 is not None and day6.spool_extras:
         spool_payload.update(day6.spool_extras)
@@ -472,6 +551,17 @@ async def score_attempt(
             else {"active": 0, "k_max": 0, "advisory_mode": False}
         ),
         "control_arm": control_arm,
+        # Source: Day-7 Plan §4 Step 4.5 -- additive; the dashboard ignores
+        # unknown keys. `fail_open` is always False on the healthy path (a
+        # fail-open never reaches here -- it is caught in routes_score.py);
+        # `alert` reflects the merchant's rolling fail-open budget.
+        "availability": {
+            "fail_open": False,
+            "alert": (
+                state.availability.is_alerting(merchant_id, ingest_ms)
+                if state.availability is not None else False
+            ),
+        },
     }
     await state.event_bus.publish(event)
 

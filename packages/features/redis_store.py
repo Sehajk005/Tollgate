@@ -105,6 +105,20 @@ class RedisWindowStore:
         results = pipe.execute()
         return WindowSnapshot(count=int(results[-1]))
 
+    def shed_incr(self, merchant_id: str, ip: str, now_ms: int, ttl_ms: int) -> int:
+        """
+        Source: Day-7 Plan §4 Step 3 -- `INCR tg:{m}:shed:{ip}` plus a
+        `PEXPIRE` on the first increment (value == 1), so the shed counter
+        cannot persist past its TTL. Key matches `MERCHANT_SCOPED_KEY_RE`.
+        `now_ms` is unused here -- Redis applies the TTL against its own
+        clock; the in-memory backend needs it because it has none.
+        """
+        key = f"tg:{merchant_id}:shed:{ip}"
+        count = int(self._client.incr(key))
+        if count == 1:
+            self._client.pexpire(key, ttl_ms)
+        return count
+
     def score_path(self, request: ScorePathRequest) -> ScorePathSnapshot:
         idem_key = f"tg:{request.merchant_id}:idem:{request.idem_digest}"
         eidr_key = f"tg:{request.merchant_id}:eidr:{request.event_id}"
