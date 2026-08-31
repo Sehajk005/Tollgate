@@ -63,6 +63,34 @@ drift:
     unit: bool
     source: "Day-6 Plan §9 -- the L2b cut switch; set false to cut Layer 2b at the 20:00 checkpoint without removing code"
 
+# Source: Day-7 Plan §4 Step 3 -- merchant-scoped admission control. The token
+# bucket and the fail-open budget are held in-process on ScorerState (never a
+# second Redis write, Decision 71 / Day-7 Decision 87). Leaves follow the
+# {value, unit, source} shape; config/policy.yaml is already covered by
+# eval/provenance.py::DEFAULT_CONFIG_PATHS, so adding this block changes
+# config_hash VALUES only and test_config_hash.py (fully relative) is unaffected.
+admission:
+  rate_per_s:
+    value: 50
+    unit: requests_per_second
+    source: "Threat Model v2 §4/P4 -- per-merchant steady-state admission ceiling; a key-holder cannot consume more than this before traffic is shed to the rules-only rung"
+  burst:
+    value: 200
+    unit: tokens
+    source: "Threat Model v2 §4/P4 -- burst capacity (4 s at rate_per_s) so a legitimate checkout spike is not shed"
+  shed_ttl_s:
+    value: 60
+    unit: seconds
+    source: "Decision 15 -- the shed counter tg:{m}:shed:{ip} expires after 60 s, matching R1's attempts_per_ip_60s window; shed state cannot persist past its TTL"
+  fail_open_budget_per_min:
+    value: 120
+    unit: fail_opens_per_minute
+    source: "Threat Model v2 §6 -- per-merchant fail-open budget; a sustained breach converts a silent degradation into a loud one, never into a 5xx (Day-7 Decision 89)"
+  fail_open_alert_threshold:
+    value: 20
+    unit: fail_opens_per_window
+    source: "Threat Model v2 §6 -- at or above 20 fail-opens in one 60 s window the availability alert is raised and logged ERROR exactly once per window (that suppression is the rate limit)"
+
 policy:
   hysteresis_gap:
     value: 0.08

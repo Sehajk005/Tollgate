@@ -53,3 +53,33 @@ class ScoreResponse(BaseModel):
     attempt_uid: str
     decision: Decision
     latency_ms: int
+
+
+class OutcomeRequest(BaseModel):
+    """
+    Wire contract for POST /v1/outcome (Day-7 Plan §4 Step 5 / Threat Model
+    §4/P5). The gateway result for a previously scored attempt, joined back by
+    `(merchant_id, event_id)`. `extra="forbid"` so a tampered field set is
+    rejected outright; a tampered field VALUE changes the canonical body and
+    fails the HMAC. Maps 1:1 onto existing `auth_outcome` columns -- no schema
+    change.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str = Field(min_length=1)
+    gateway_status: str = Field(min_length=1)
+    reached_gateway: bool
+
+    decline_code: Optional[str] = None
+    gateway_latency_ms: Optional[int] = None
+    auth_fee_minor: Optional[int] = None
+
+
+class OutcomeResponse(BaseModel):
+    """A bare status, echoing nothing (consistent with ScoreResponse never
+    echoing rule names): `recorded` on success, an HTTP status code otherwise."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: str

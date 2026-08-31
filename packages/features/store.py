@@ -99,3 +99,12 @@ class WindowStore(Protocol):
     def record_and_read(self, request: WindowRequest) -> WindowSnapshot: ...
 
     def score_path(self, request: ScorePathRequest) -> ScorePathSnapshot: ...
+
+    # Source: Day-7 Plan §4 Step 3 -- the rules-only shed rung. Increments the
+    # merchant-scoped shed counter `tg:{m}:shed:{ip}` and returns the new
+    # value; the counter expires `ttl_ms` after its first increment. Additive,
+    # exactly like `score_path()` was on Day 3. `now_ms` comes from the
+    # injected clock (the in-memory backend needs it for TTL expiry; the Redis
+    # backend lets PEXPIRE handle it). This runs OUTSIDE the atomic score path
+    # -- shed structurally precludes `compute_features` / model / Layer 2.
+    def shed_incr(self, merchant_id: str, ip: str, now_ms: int, ttl_ms: int) -> int: ...

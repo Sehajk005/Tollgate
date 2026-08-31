@@ -54,3 +54,37 @@ class EvidenceBundle:
                 raise ValueError(f"rule name {name!r} outside closed vocabulary")
         if self.primary_rule not in RULE_NAME_VOCAB:
             raise ValueError(f"primary_rule {self.primary_rule!r} outside closed vocabulary")
+
+
+def build_bundle(*, entity_type: str, pseudonym: str, decision: str, evaluation) -> "EvidenceBundle":
+    """
+    Source: Day-7 Plan §4 Step 6 -- THE single narrator admission point. It
+    accepts no `user_agent`, no raw identifier, and no free text: `entity_type`
+    and `decision` are closed-vocabulary enum strings, `pseudonym` is the
+    IncidentRegistry-minted `ip_1` / `bin_1` form, and every rule slot is
+    derived from `evaluation` (a `RulesEvaluation`), whose rule names are the
+    same three-element closed vocabulary. `EvidenceBundle.__post_init__`
+    remains the enforcement -- anything out of vocabulary raises here, and the
+    caller falls back to `template.render()`.
+    """
+    fired = tuple(name for name in evaluation.fired_names if name in RULE_NAME_VOCAB)
+
+    def _ratio(result) -> float:
+        return (result.value / result.threshold) if result.threshold else 0.0
+
+    candidates = [r for r in evaluation.results if r.fired and r.name in RULE_NAME_VOCAB]
+    if not candidates:
+        # No rule fired (a Layer-2-only incident): pick the highest-ratio rule
+        # deterministically so the primary slot is always populated.
+        candidates = [r for r in evaluation.results if r.name in RULE_NAME_VOCAB]
+    primary = max(candidates, key=_ratio)
+
+    return EvidenceBundle(
+        entity_type=entity_type,
+        pseudonym=pseudonym,
+        decision=decision,
+        rules_fired=fired,
+        primary_rule=primary.name,
+        primary_value=float(primary.value),
+        primary_threshold=float(primary.threshold),
+    )

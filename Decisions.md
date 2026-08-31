@@ -3200,3 +3200,253 @@ with a concrete, deterministic scope rule.
 
 ### Implementation impact
 `services/scorer/scoring.py::_resolve_layer2`.
+
+## Gate H: Day 7 — "Security Hardening + Adaptive Adversary" (30 August 2026)
+
+Days 1–6 shipped scoring, features, Layer 1, and Layer 2 + policy but deliberately
+deferred every adversarial control to Day 7. Gate H closes those seams — merchant-scoped
+admission control, the fail-open ladder, `POST /v1/outcome` verification, the stored-decision
+replay reply, and the narrator admission boundary — and then publishes the honest number:
+Tier E recall, produced by a seeded parameter search run against the frozen detector.
+Idempotency and the Layer-2 concurrency guarantee were **already** correct on Days 3/6;
+Day 7 pins them with tests and hardens only the one genuine gap (the stored-decision reply).
+
+## Decision 86: idempotency was complete on Day 3; Day 7 adds only the stored-decision reply
+
+### Context
+`SET key <attempt_uid> NX PX` (`packages/features/windows.lua`), the identity
+`sha256(merchant||event_id||payload_digest)` (`compute.py`), and `event_id_reuse_count` as
+`SADD`+`SCARD` all shipped on Day 3. The one gap: an idempotent replay minted a *fresh*
+`attempt_uid`, re-scored against zeroed features, and re-spooled a second row.
+
+### Decision
+Add a bounded FIFO `decision_cache` (`DECISION_CACHE_MAX = 10_000`,
+`{idem_digest -> (attempt_uid, decision_value)}`) **in-process on `ScorerState`**, written
+after a decision resolves. On `features.idempotent_replay` with a cache hit, `score_attempt`
+returns the stored `(attempt_uid, decision)` and **skips the spool append and the SSE
+publish** — no duplicate `auth_attempt` / `attempt_score` row, no duplicate attempt event.
+A cross-process or FIFO-evicted miss falls back to the pre-Day-7 behaviour. In-process, not
+a second Redis write, to preserve TRD §6.3's one-round-trip invariant and the p99 < 5 ms
+budget — exactly the trade Decision 71 established for Layer-2 state. The single-worker
+limitation is the one Decision 71 already accepts.
+
+### Specification impact
+None — closes the "stored-decision reply" gap the Threat Model §3 always implied.
+
+### Implementation impact
+`services/scorer/deps.py` (`decision_cache`, `DECISION_CACHE_MAX`),
+`services/scorer/scoring.py` (`_remember_decision`, the post-`compute_features` early
+return), `packages/features/compute.py` (`FeatureVector.idem_digest`, surfaced not
+recomputed).
+
+## Decision 87: the token bucket and the fail-open budget are in-process and merchant-scoped
+
+### Context
+Day 7 needs the middle and bottom rungs of `FULL -> RULES-ONLY/SHED -> FAIL-OPEN`. Neither
+may take a second Redis round trip on the hot path.
+
+### Decision
+`AdmissionController` holds one `TokenBucket` per `merchant_id` on `ScorerState`; the bucket
+refills lazily from the **injected clock** (no background timer, no wall-clock read). The
+budget is therefore merchant-scoped — one merchant's flood cannot shed another merchant's
+traffic. `AvailabilityMonitor` counts fail-opens per merchant in a clock-driven rolling
+window. Both carry the same stated single-worker limitation Decision 71 already accepts. The
+tunables live in `config/policy.yaml`'s new `admission:` block
+(`rate_per_s`, `burst`, `shed_ttl_s`, `fail_open_budget_per_min`,
+`fail_open_alert_threshold`), `{value, unit, source}`-shaped, covered by `config_hash`.
+
+### Specification impact
+Threat Model §4/P4's admission ceiling and Decision 15's rules-only shed rung are now
+implemented; the shed key `tg:{m}:shed:{ip}` matches `MERCHANT_SCOPED_KEY_RE` and expires
+after `shed_ttl_s` (60 s), so shed state cannot persist past its TTL.
+
+### Implementation impact
+`services/scorer/admission.py` (new), `services/scorer/deps.py`,
+`services/scorer/routes_score.py`, `packages/features/{store,memory_store,redis_store}.py`
+(`shed_incr`), `config/policy.yaml`.
+
+## Decision 88: the outcome HMAC secret is sourced from the environment and bound to the merchant
+
+### Context
+`merchant.outcome_hmac_key_hash` stores a SHA-256 *hash*, not a key; it cannot verify an
+HMAC by itself. No schema change is allowed.
+
+### Decision
+`POST /v1/outcome` reads the raw secret from `TOLLGATE_OUTCOME_SECRET` and *binds* it to the
+merchant by asserting `hash_api_key(secret) == merchant.outcome_hmac_key_hash` — exactly how
+`api_key_hash` already works. No secret at rest, no schema change. `scripts/seed_merchant.py`
+now prints the raw outcome secret once (like the API key) instead of discarding it.
+
+### Specification impact
+Threat Model §4/P5's signed-outcome requirement is met without a schema migration.
+
+### Implementation impact
+`services/scorer/routes_outcome.py` (new), `services/scorer/app.py`,
+`scripts/seed_merchant.py`.
+
+## Decision 89: fail-open always returns `allow`; authentication is never allowed to fail open
+
+### Context
+A fault in `score_attempt` (dead Redis, locked SQLite, a model that raises) previously
+propagated as a 500.
+
+### Decision
+`routes_score.py` wraps `score_attempt` in `try/except Exception`; on any fault it records
+the fail-open on `AvailabilityMonitor`, spools an `allow` `ScoreRecord` with a
+`degraded_reason` of `fail_open:{window_store|model}`, and returns
+`ScoreResponse(Decision.ALLOW)`. The response is **always `allow`** — exhausting the budget
+converts a silent degradation into one `ERROR` log + an `alert` flag per clock window (that
+once-per-window suppression *is* the rate limit), never a 5xx and never a different tier.
+**Authentication is fenced off:** a warm `api_key_hash -> merchant_id` cache lets a locked DB
+still authenticate (then fail-open, merchant-scoped); a cold cache + an unavailable DB
+returns `503`, never `allow`. Redis is given `socket_timeout` / `socket_connect_timeout`
+(`FAIL_OPEN_BUDGET_MS = 150`) so a dead socket raises promptly — `score_path()` is a
+blocking sync call, so the socket timeout *is* the mechanism (`asyncio.wait_for` cannot
+bound it); the acceptance test measures wall clock.
+
+### Specification impact
+Implements Threat Model §6's availability posture; makes explicit that auth is outside the
+fail-open envelope.
+
+### Implementation impact
+`services/scorer/routes_score.py`, `services/scorer/auth.py`
+(`resolve_merchant_id_cached`, `AuthBackendUnavailable`), `services/scorer/deps.py`
+(`api_key_cache`, Redis socket timeouts, `FAIL_OPEN_BUDGET_MS`),
+`services/scorer/admission.py` (`AvailabilityMonitor`), `services/scorer/scoring.py`
+(SSE `availability` field).
+
+## Decision 90: the `/v1/outcome` signing string, canonicalisation, and failure codes
+
+### Context
+No prior specification for the outcome wire contract existed anywhere.
+
+### Decision
+Headers: `X-Tollgate-Key`, `X-Tollgate-Signature`, `X-Tollgate-Timestamp` (epoch ms),
+`X-Tollgate-Nonce`. Canonical body: `json.dumps(body.model_dump(), sort_keys=True,
+separators=(",", ":"))`. Signing string is
+merchant_id, timestamp_ms, nonce and sha256(canonical_body), newline-separated; `sig =
+hmac_sha256(secret, signing_string).hexdigest()`, compared with `hmac.compare_digest`.
+Failure behaviour: missing header -> `401`; stale (`|now - ts| > 300_000` ms) -> `401`; key
+not bound / bad signature -> `401`; unknown `event_id` -> `404`; replayed nonce
+(`sqlite3.IntegrityError` on the `outcome_nonce` PK) -> `409`. The response body is a bare
+`{"status": ...}` — no detail echoed, consistent with `ScoreResponse` never echoing rule
+names. On success: `outcome_nonce` then `auth_outcome` (`sig_verified = 1`), joining
+`event_id -> attempt_uid` via `(merchant_id, event_id)`. The route self-guards: without
+`TOLLGATE_OUTCOME_SECRET` it returns `503` (logged once) and the rest of the service is
+unaffected. `decline_rate_per_ip_5m`, `invalid_cvv_share_ip_5m`, `outcome_coverage_ratio`
+stay `0.0` — feeding them needs new outcome-keyed windows, which no Day-7 deliverable names.
+
+### Specification impact
+Defines the previously-unspecified `/v1/outcome` contract.
+
+### Implementation impact
+`services/scorer/routes_outcome.py` (new), `packages/contracts/wire.py`
+(`OutcomeRequest` / `OutcomeResponse`), `packages/storage/repository.py`
+(`insert_auth_outcome`, `insert_outcome_nonce`).
+
+## Decision 91: `packages/simulator/evade.py` is pure and takes the evaluator as a callback
+
+### Context
+`tests/acceptance/test_simulator_safety.py` runs an AST transitive-import closure over
+`packages/simulator/**` and bans `asyncio`, `socket`, `subprocess`, `http`, `urllib`, ...
+`services/scorer/replay.py` imports `asyncio` at module level, so `evade.py` **cannot**
+import the scorer.
+
+### Decision
+`packages/simulator/evade.py` is pure and import-safe — it imports only
+`packages.simulator.rng` (`SubStream`) and stdlib, and takes the detector as an
+`evaluate_fn(params) -> EpisodeOutcome` callback. The offline driver that owns the frozen
+detector (`InMemoryWindowStore` + `DayOneRules` + the `models/` bundle + `_load_layer2`,
+driven through `ReplayDriver.run(request, stream=...)`) lives in `scripts/search_evasive.py`,
+outside `SIMULATOR_ROOT`. This is dependency inversion, consistent with `attack.py`'s
+existing invariant ("detection is never informed by truth"). `pytest -m safety` was run
+immediately after creating `evade.py` and stays green.
+
+### Specification impact
+None — realises Eval Protocol §5's config-space search within the mandatory simulator
+safety boundary.
+
+### Implementation impact
+`packages/simulator/evade.py` (new), `scripts/search_evasive.py` (new).
+
+## Decision 92: Tier E searches only the six parameters the generator actually consumes
+
+### Context
+`config/attack_tiers.yaml` declares ten `evasive` leaves, but reading
+`packages/simulator/attack.py:54-72` only six are read by `generate_attack_episode`:
+`attempts_per_hour`, `ip_pool_size`, `distinct_cards`, `bin_pool_size`,
+`amount_quantile_band.{min,max}`, `episode_duration_s`.
+
+### Decision
+The search space is exactly those six. `foreign_bin_share`, `amount_sampler`,
+`session_reuse`, `hour_of_day_placement` are **carried at their hard-tier values** and the
+`evasive` block / the report say so — claiming they were searched would fabricate a finding.
+The search is a new parameter vector for the *existing* generator (no `attack.py` change);
+randomness is all `SubStream(seed, "evade:<field>")` (Decision 30); termination is `budget`
+(200) evaluations **or** `patience` (40) non-improving candidates, both hard bounds. The
+objective is Eval Protocol §5 verbatim: maximise `cards_validated_per_hour` subject to
+`mean(score_calibrated) < theta_challenge` and no incident opened; `theta_challenge` is read
+from the pinned `policy_config` (`PolicySnapshot.thresholds["challenge"]`), *derived*, never
+a literal (Decision 70's discipline).
+
+### Specification impact
+Narrows Eval Protocol §5's "config-space search over `attack_tiers.yaml` parameters" to the
+parameters the generator actually consumes.
+
+### Implementation impact
+`packages/simulator/evade.py`, `packages/simulator/generate.py` (`--tier evasive`,
+`_evasion_params`), `config/attack_tiers.yaml` (`evasive` block, written by the search),
+`eval/outputs/evade_search.json` (the full trace).
+
+## Decision 93: Tier E is evaluated on a dedicated split, never mixed into training or the temporal split
+
+### Context
+Eval Protocol §7 requires Tier E to be "never in training, generated after the model is
+frozen." Adding an evasive run to `build_runs()` would also move `temporal_split`'s
+`t_min`/`t_max` boundary and break the Day-5 characterization snapshot
+(`test_scores_vs_recorded_eval_run.py`).
+
+### Decision
+`build_runs()` is unchanged. `build_tier_e_runs(seed)` returns one run whose `run_index`
+continues **after** the existing 19 (12 tier blocks + 7 negative-control scenarios), so
+every `m-eval-NN` / `run_index` is stable; its seed is offset by 900. `eval/dataset.py`
+gains `tier_e_split(samples)` (the `negative_control_splits` pattern); `eval/harness.py`
+gains `build_tier_e_dataset(seed)` (one `build_dataset(build_runs(seed) +
+build_tier_e_runs(seed))` call, then filtered to `stream_tier == "evasive"`) and `run_all()`
+evaluates it with the same scorers, adding `eval_reports["tier_e"]`. `evaluate()`'s
+`tier_breakdown`, `eval/load.py::write_eval_run`'s `per_tier`, and `eval/report.py`'s
+per-tier loops all gain `evasive`; on `write_eval_run` the `evasive` entry is sourced from
+the dedicated `tier_e` split's matching report, never from `temporal_test`. Tier-E runs are
+**appended** to the same corpus (`replay_corpus(rebuild=False)`), never a rebuild.
+
+### Specification impact
+Realises Eval Protocol §7's isolation requirement; preserves split/provenance rules,
+negative-control methodology, and `eval_run.run_id` idempotency by construction.
+
+### Implementation impact
+`eval/corpus.py` (`build_tier_e_runs`), `eval/dataset.py` (`tier_e_split`),
+`eval/harness.py` (`build_tier_e_dataset`, `run_all`, `evaluate`), `eval/load.py`
+(`write_eval_run` gains `tier_e_metrics`), `eval/report.py` (per-tier loops + a Tier-E
+note), the two authorized acceptance-test edits (`test_attack_tiers.py`,
+`test_eval_run_row.py`).
+
+## Decision 94: `/v1/stream` authentication is re-deferred past Day 7
+
+### Context
+`Flow.md` §10, Decision 34, and Threat Model §9 all call `/v1/stream` authentication
+"explicit Day 7 hardening," but the approved Day-7 deliverable list (§4 A–F) omits it.
+
+### Decision
+`/v1/stream` authentication is **explicitly re-deferred** past Day 7, under the minimality
+rule (implement exactly the approved deliverables). `/v1/stream` still binds loopback for
+the demo and still publishes `rules_fired` / `feature_snapshot` unauthenticated; the residual
+disclosure risk is unchanged from Day 6 and documented. This decision records the
+discrepancy with Decision 34 / Flow.md §10 / Threat Model §9 so the deferral reads as a
+choice, not an oversight.
+
+### Specification impact
+Supersedes the "Day 7" annotation on `/v1/stream` auth in Decision 34, Flow.md §10, and
+Threat Model §9.
+
+### Implementation impact
+None (documentation only): `Flow.md` §10 and `README.md`.

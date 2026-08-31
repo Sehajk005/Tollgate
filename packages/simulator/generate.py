@@ -42,6 +42,32 @@ EPISODE_START_DENOMINATOR = 3
 GUARANTEE_WINDOW_MS = 60_000
 
 
+def _evasion_params(tier: str, tier_config: dict) -> "dict | None":
+    """
+    Source: Day-7 Plan §4 Step 8 / §6 -- for the `evasive` tier ONLY, capture
+    the six searched leaf values onto `Episode.evasion_params`; `eval/load.py`
+    already `json.dumps`es them into `episode_truth.evasion_params` (the column
+    exists -- no schema change, no writer change). `None` for every other tier,
+    so easy/medium/hard episode rows are byte-identical.
+    """
+    if tier != "evasive":
+        return None
+    band = tier_config.get("amount_quantile_band", {}) or {}
+
+    def _v(key: str):
+        node = tier_config.get(key)
+        return node.get("value") if isinstance(node, dict) else node
+
+    return {
+        "attempts_per_hour": _v("attempts_per_hour"),
+        "ip_pool_size": _v("ip_pool_size"),
+        "distinct_cards": _v("distinct_cards"),
+        "bin_pool_size": _v("bin_pool_size"),
+        "amount_quantile_band": {"min": band.get("min"), "max": band.get("max")},
+        "episode_duration_s": _v("episode_duration_s"),
+    }
+
+
 def build_stream(
     *, seed: int, tier: str, hours: int = DEFAULT_HOURS, epoch_ms: int = DEFAULT_EPOCH_MS,
     store_profile: "dict | None" = None, baseline_profile: "dict | None" = None,
@@ -81,7 +107,7 @@ def build_stream(
         episode_id=episode_id, kind="attack", tier=tier, scenario=None,
         started_at=episode_start_ms, ended_at=ended_at_ms,
         attempt_count=len(episode_labels), distinct_cards=distinct_cards,
-        generator_seed=seed, evasion_params=None,
+        generator_seed=seed, evasion_params=_evasion_params(tier, tier_config),
     )
 
     if epoch_ms:
@@ -148,7 +174,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seed", type=int, required=True)
     tier_group = parser.add_mutually_exclusive_group(required=True)
-    tier_group.add_argument("--tier", choices=["easy", "medium", "hard"])
+    tier_group.add_argument("--tier", choices=["easy", "medium", "hard", "evasive"])
     tier_group.add_argument("--scenario", choices=list(NEGATIVE_SCENARIOS))
     parser.add_argument("--hours", type=int, default=DEFAULT_HOURS)
     parser.add_argument("--epoch-ms", dest="epoch_ms", type=int, default=DEFAULT_EPOCH_MS)

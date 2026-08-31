@@ -17,8 +17,15 @@ first real per-tier `eval_run` rows — the model informs the score, never the
 decision. See `Flow.md` for the actual execution paths and `Decisions.md` for
 the reasoning behind them.
 
-**Completed: Days 1-5.** Days 6-8 (incident detection / CUSUM, the operator
-dashboard, Gemini narrator) are not yet built.
+**Completed: Days 1–7.** Day 6 added Layer 2 (CUSUM / distinct-card drift →
+incident state machine → cost-derived, blast-radius-capped enforcement). Day 7
+added the security posture the Threat Model promises — merchant-scoped
+admission control with a rules-only shed rung, a fail-open ladder that always
+returns `allow`, `POST /v1/outcome` (HMAC + nonce + 5-minute staleness), the
+stored-decision replay reply, a single narrator admission boundary, and
+**Tier E**: an adaptive adversary tuned by a seeded parameter search against
+the frozen detector. Days 8–9 (the D3/D6 operator dashboard, the Gemini
+narrator backend, `/v1/stream` authentication) are not yet built.
 
 ## Running the demo
 
@@ -72,8 +79,8 @@ cat eval/outputs/report.md
   cost, calibration, baselines) each render an explicit empty/deferred state rather than a
   fabricated number for anything Day 4 cannot yet measure (no incident detector, no
   calibrator, no replay corpus).
-- `medium` is now a real attack tier (`config/attack_tiers.yaml`); only `evasive` stays
-  `pending: "Day 7"`.
+- `medium` and (Day 7) `evasive` are real attack tiers (`config/attack_tiers.yaml`) — the
+  `evasive` block is populated by the Tier-E search and is no longer `pending`.
 - Seven negative-control scenarios exist (`packages/simulator/negative.py`):
   `flash_sale, corporate_nat, cgnat, retry_storm, subscription_batch, nri_traffic,
   shared_ip_legit`. Generate one by hand:
@@ -181,6 +188,89 @@ hysteresis-damped, blast-radius-capped, and **never automatically above
   (Day 8); rendering Layer-2 harm metrics into `eval/report.py` (Day 8/9); reinstating the
   `_q` / `*_sigma` / decline model features (Decision 16/64).
 
+## Security posture (Day 7)
+
+Every score request runs one of three rungs, all in `services/scorer/routes_score.py`,
+all **outside** the Layer-2 atomic block (so the 100-concurrent-vs-sequential CUSUM
+guarantee holds):
+
+| Rung | Trigger | Behaviour |
+|---|---|---|
+| **FULL** | merchant token bucket has a token | `score_attempt()` as Day 6, plus an `availability` field on SSE |
+| **RULES-ONLY / SHED** | bucket empty | `INCR tg:{m}:shed:{ip}` (merchant-scoped, 60 s TTL); tier = `throttle` if the counter clears R1's threshold else `allow` (**R1 only**, Decision 15); `X-Tollgate-Shed: 1`; a `shed=True` row; **`compute_features` / model / Layer 2 never run** |
+| **FAIL-OPEN** | `score_attempt()` raised (dead Redis, model exploded) | always returns `allow`; a `degraded_reason: fail_open:<reason>` row; a sustained breach logs `ERROR` + raises `alert` on SSE **once per clock window** (that is the rate limit) — never a 5xx, never a different tier |
+
+- **Admission** is a lazy-refill token bucket per `merchant_id` on `ScorerState`, driven by
+  the injected clock (`config/policy.yaml: admission:` — `rate_per_s 50`, `burst 200`,
+  `shed_ttl_s 60`, `fail_open_alert_threshold 20`). One merchant's flood cannot shed
+  another's.
+- **Authentication never fails open.** A warm `{api_key_hash → merchant_id}` cache lets a
+  locked auth DB still authenticate (then fail-open, merchant-scoped); a cold cache + an
+  unavailable DB returns **`503`**, never `allow`.
+- **`POST /v1/outcome`** verifies `hmac_sha256(secret, "{merchant_id}\n{ts_ms}\n{nonce}\n
+  {sha256(canonical_body)}")`, a 5-minute staleness window, and a single-use nonce
+  (`outcome_nonce` PK → `409` on replay). The secret comes from **`TOLLGATE_OUTCOME_SECRET`**
+  and is bound to the merchant via the existing `outcome_hmac_key_hash` — no schema change,
+  no secret at rest. Unsigned / tampered / stale → `401`; unknown `event_id` → `404`; unset
+  secret → `503`. `scripts/seed_merchant.py` now prints the raw outcome secret once.
+  `decline_rate_per_ip_5m` and its two siblings still read `0.0` — outcome-derived features
+  are out of Day-7 scope.
+- **Narrator:** at incident-open only, `build_bundle()` is the single admission point (it
+  takes no `user_agent`, no raw identifier, no free text); `assemble_prompt()` runs the
+  `CHARSET_RE` gate on the input side; the template narrative is stored on the incident row.
+  A hostile UA is kept as evidence in `auth_attempt.client_evidence` but has no path to the
+  prompt.
+- **Residual risk (Threat Model §4):** a key-holder can force CAPTCHAs on up to `K_max`
+  entities and consume the merchant's rate budget; they **cannot** block a customer, cannot
+  persist state past the shed TTL, and cannot act invisibly (every degradation writes a
+  `degraded_reason` row and, past budget, a paged `alert`).
+- **In-process, single-worker:** the token bucket, the availability monitor, and the
+  stored-decision cache live on `ScorerState` (Decision 71's trade) — one Uvicorn worker
+  only. **Re-deferred past Day 7:** `/v1/stream` authentication (Decision 94).
+
+Run the demo with the outcome route enabled:
+
+```
+export TOLLGATE_OUTCOME_SECRET="$(python -m scripts.seed_merchant | sed -n 's/.*TOLLGATE_OUTCOME_SECRET: //p')"
+```
+
+## Tier E — adaptive adversary (Day 7)
+
+Every recall number before Day 7 was measured against `easy` / `medium` / `hard`, which
+differ only in *pacing and spread* — the exact F5 defect the Threat Model was written to
+fix. Tier E closes that: a seeded config-space search (`packages/simulator/evade.py`, pure
+and import-safe — it takes the detector as a callback and cannot import the scorer) tunes
+the **six parameters `generate_attack_episode` actually consumes** against the **frozen**
+Layer-1 + Layer-2 detector.
+
+```
+uv run python -m scripts.search_evasive --seed 42 --budget 200 --patience 40 \
+    --demo-db tollgate.db --model-dir models/ \
+    --write-config config/attack_tiers.yaml --trace eval/outputs/evade_search.json
+uv run python -m scripts.search_evasive --append-corpus --seed 42 --db data/corpus/tollgate.db
+uv run python -m eval.harness --split all --seed 42 \
+    --corpus-db data/corpus/tollgate.db --model-dir models/ --write-eval-run
+```
+
+- **Objective** (Eval Protocol §5, verbatim): maximise `cards_validated_per_hour` subject to
+  `mean(score_calibrated) < θ_challenge` and no incident opened. `θ_challenge` is read from
+  the pinned `policy_config` (`≈ 0.257`), *derived*, never a literal. Randomness is all
+  `SubStream(seed, "evade:<field>")`; termination is 200 evaluations **or** 40 non-improving
+  candidates.
+- **Converged vector (seed 42):** `attempts_per_hour 866`, `ip_pool_size 77`,
+  `distinct_cards 286`, `bin_pool_size 19`, `amount_quantile_band [0, 26]`,
+  `episode_duration_s 704` — `cards_validated_per_hour ≈ 76.7` while staying under
+  `θ_challenge` and opening no incident. The four declared-but-inert leaves
+  (`foreign_bin_share`, `amount_sampler`, `session_reuse`, `hour_of_day_placement`) are
+  carried at their `hard`-tier values, not searched (Decision 92). Full trace:
+  `eval/outputs/evade_search.json`.
+- **Result — the worst number in the deck.** On the dedicated `tier_e` split (n = 390,
+  prevalence 0.43 — *never* mixed into training or the temporal split, Eval Protocol §7 /
+  Decision 93), recall@target_fpr is **0.39 for `l1-lgbm-v1`** and **0.28 for B0** (the live
+  R1–R3 rules). The split is short and single-episode, so the target-FPR point is
+  `UNRESOLVABLE (too few negatives)` and the report says so. What the attacker had to do to
+  evade us — 77 IPs, 19 BINs, low-and-slow pacing — is itself the finding.
+
 ## Tests
 
 ```
@@ -210,15 +300,22 @@ eviction test only) and skip — never fail — when unreachable, so
 been run first.
 
 Day 6 adds `pytest -q -m metamorphic` (the M1–M8 Layer-2 relations) and ~65
-new tests: `tests/acceptance/test_{cusum_analytic,cusum_tuning_isolation,
-episode_state_machine,hysteresis,entity_required,enforcement_confirmation,
-blast_radius,control_arm,policy_pinning,metamorphic}.py`,
-`tests/unit/test_{cusum_recursion,drift_sprt,ladder_selection,
-entity_narrowest}.py`, and the non-gating characterization snapshot
-`tests/characterization/test_incident_shape.py`. Full suite:
-**279 passed, 10 skipped (Redis), 2 xfailed** (both `handmade_40` gates).
-The Day-6 integration acceptance tests seed a throwaway `tmp_path` DB via
-`tests/acceptance/_day6_helpers.py` and never touch the corpus.
+new tests (`tests/acceptance/test_{cusum_analytic,episode_state_machine,
+hysteresis,blast_radius,control_arm,policy_pinning,metamorphic}.py` and
+friends) plus the non-gating characterization snapshot
+`tests/characterization/test_incident_shape.py`.
+
+Day 7 adds ~30 new tests: `tests/acceptance/test_{idempotency_concurrency,
+concurrent_cusum,admission_shed,fail_open,fail_open_alert,outcome_hmac,
+narrator_injection,evade_search}.py`. Two locked tests carry an authorized
+edit (`test_attack_tiers.py` — `evasive` no longer `pending`;
+`test_eval_run_row.py` — `per_tier` gains `evasive`); `test_time_travel.py`
+was extended, not weakened, to also reproduce the appended Tier-E corpus run.
+Full suite: **302 passed, 10 skipped (Redis), 2 xfailed** (both `handmade_40`
+human-oracle gates — still xfail; not a Day-7 dependency). The Day-6/7
+integration acceptance tests seed a throwaway `tmp_path` DB and never touch
+the corpus; the Tier-E append is the one deliberate mutation of
+`data/corpus/tollgate.db`.
 
 `tests/acceptance/test_handmade_40.py` (Day-3 feature values) **and**
 `tests/acceptance/test_handmade_40_incident.py` (the Day-6 incident alert
@@ -259,3 +356,11 @@ generation run and asserting it still succeeds). `/v1/stream` is
 unauthenticated and binds loopback only for the demo; it publishes rule-fire
 detail that would be a real disclosure risk on a public network — see
 `01-THREAT-MODEL-v2.md`'s Day-2 addendum.
+
+The Day-7 Tier-E search (`packages/simulator/evade.py`) is adversarial-robustness
+evaluation, run **entirely offline** against a local detector: it opens no socket and
+spawns no subprocess (enforced for the simulator package by the same AST import-closure
+scan, which now covers `evade.py`), produces no card numbers (`opaque_card_hash` and the
+reserved fictional IIN pool are the only identity sources), keeps IPs in RFC 5737, and
+outputs only a parameter vector for *this* simulator against *this* detector. The safety
+tests were re-run immediately after `evade.py` was created and stay green.

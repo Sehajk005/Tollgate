@@ -155,9 +155,12 @@ def evaluate(
     min_cost_pi0 = cost_model.min_cost_operating_point(hull, cost_model.prior_steady_state, cost_tier)
     min_cost_pi1 = cost_model.min_cost_operating_point(hull, cost_model.prior_under_attack, cost_tier)
 
+    # Source: Day-7 Plan §6 -- `evasive` joins the per-tier breakdown. On a
+    # split with no evasive samples (temporal_test / holdout_test) the entry is
+    # None; it is populated only on the dedicated `tier_e` split.
     tier_breakdown = {
         tier: _tier_metrics([s for s in samples if s.stream_tier == tier], scorer, cost_model)
-        for tier in ("easy", "medium", "hard")
+        for tier in ("easy", "medium", "hard", "evasive")
     }
 
     clean = clean_view(split)
@@ -192,6 +195,31 @@ def build_full_dataset(
     runs = build_runs(seed, hours=hours, n_blocks_per_tier=n_blocks_per_tier)
     samples = build_dataset([(run.stream_tier, run.output) for run in runs])
     return compute_entity_overlap(samples)
+
+
+def build_tier_e_dataset(
+    seed: int, *, hours: int = BLOCK_HOURS, n_blocks_per_tier: int = N_BLOCKS_PER_TIER,
+) -> List[Sample]:
+    """
+    Source: Day-7 Plan §6 -- `build_full_dataset` is UNCHANGED. This is the
+    dedicated Tier-E dataset: ONE `build_dataset` call over
+    `build_runs(seed) + build_tier_e_runs(seed)` so `run_index` stays aligned
+    with the corpus merchants, entity-overlap computed against the full set,
+    then filtered to the evasive stream. Returns `[]` when the Tier-E search
+    was cut and `config/attack_tiers.yaml`'s `evasive` block is still pending.
+    """
+    from eval.corpus import build_runs, build_tier_e_runs
+    from packages.simulator.profile import load_attack_tiers
+
+    if load_attack_tiers().get("evasive", {}).get("pending"):
+        return []
+
+    runs = build_runs(seed, hours=hours, n_blocks_per_tier=n_blocks_per_tier)
+    runs = runs + build_tier_e_runs(seed, hours=hours)
+    samples = compute_entity_overlap(
+        build_dataset([(run.stream_tier, run.output) for run in runs])
+    )
+    return [s for s in samples if s.stream_tier == "evasive"]
 
 
 def _make_provenance(model_version: str) -> RunProvenance:
@@ -420,6 +448,21 @@ def run_all(
             ))
         eval_reports[split.name] = reports
 
+    # Source: Day-7 Plan §6 -- the dedicated Tier-E split, evaluated with the
+    # SAME scorers (sanity + model/B0). Skipped entirely when the search was
+    # cut (build_tier_e_dataset returns []).
+    tier_e_samples = build_tier_e_dataset(seed)
+    if tier_e_samples:
+        te_split = Split(name="tier_e", samples=tuple(tier_e_samples))
+        te_reports: List[Report] = []
+        for _key, (model_version, scorer) in {**sanity, **model_scorers}.items():
+            provenance = _make_provenance(model_version)
+            te_reports.append(evaluate(
+                te_split, scorer, cost_model, provenance,
+                policy_versions_available=policy_versions_available,
+            ))
+        eval_reports["tier_e"] = te_reports
+
     return HarnessRun(
         eval_reports=eval_reports, temporal_train_n=temporal_train.n, holdout_train_n=holdout_train.n,
         negative_scenario_names=tuple(negative_splits.keys()), negative_splits=negative_splits,
@@ -499,6 +542,13 @@ def main() -> None:
 
         cost_model = load_cost_model()
         run = runs[0]
+        # Source: Day-7 Plan §6 -- the `evasive` per-tier entry on EVERY
+        # eval_run row is sourced from the dedicated `tier_e` split's matching
+        # model report, never from the temporal_test/holdout report (which has
+        # no evasive samples). Absent when the search was cut.
+        tier_e_reports = {
+            r.provenance.model_version: r for r in run.eval_reports.get("tier_e", [])
+        }
         conn = connect(args.corpus_db)
         written: List[Tuple[str, str, str]] = []
         try:
@@ -520,12 +570,17 @@ def main() -> None:
                             extra["calibration"] = run.calibration_block
                         if run.audit_block is not None:
                             extra["audit_summary"] = _audit_summary(run.audit_block)
+                    te_report = tier_e_reports.get(mv)
+                    tier_e_tm = (
+                        te_report.tier_breakdown.get("evasive") if te_report is not None else None
+                    )
                     rid = write_eval_run(
                         conn, report=report, seed=args.seed, model_version=mv,
                         calibrator_version=cal_ver,
                         prior_assumed=cost_model.prior_steady_state,
                         artifacts_path=str(args.model_dir or args.out),
                         extra_metrics=extra or None,
+                        tier_e_metrics=tier_e_tm,
                     )
                     written.append((mv, report.split_name, rid))
         finally:

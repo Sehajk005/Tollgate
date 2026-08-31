@@ -68,6 +68,41 @@ def insert_score(conn: sqlite3.Connection, record: ScoreRecord) -> None:
     )
 
 
+def insert_outcome_nonce(conn: sqlite3.Connection, nonce: str, seen_at: int) -> None:
+    """
+    Source: Day-7 Plan §4 Step 5 -- `outcome_nonce.nonce` is a PRIMARY KEY, so
+    a plain INSERT (NOT `OR IGNORE`) raises `sqlite3.IntegrityError` on a
+    replay; the route turns that into 409. This is the replay guard.
+    """
+    conn.execute(
+        "INSERT INTO outcome_nonce (nonce, seen_at) VALUES (?, ?)", (nonce, seen_at)
+    )
+
+
+def insert_auth_outcome(conn: sqlite3.Connection, row: dict) -> None:
+    """
+    Source: Day-7 Plan §4 Step 5 -- one row per scored attempt (attempt_uid
+    PK). `INSERT OR IGNORE` keeps a second legitimately-signed report of the
+    same outcome from crashing the route; the nonce guard above is what stops
+    a replay. `sig_verified` is always 1 here -- the route only reaches this
+    point after `hmac.compare_digest` succeeds.
+    """
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO auth_outcome (
+            attempt_uid, gateway_status, decline_code, gateway_latency_ms,
+            auth_fee_minor, reached_gateway, sig_verified, ingest_time
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            row["attempt_uid"], row["gateway_status"], row.get("decline_code"),
+            row.get("gateway_latency_ms"), row.get("auth_fee_minor"),
+            int(bool(row["reached_gateway"])), int(bool(row.get("sig_verified", True))),
+            row["ingest_time"],
+        ),
+    )
+
+
 def append_policy_config(
     conn: sqlite3.Connection,
     merchant_id: str,

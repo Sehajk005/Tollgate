@@ -243,6 +243,16 @@ def negative_control_splits(samples: Sequence[Sample]) -> Dict[str, Split]:
     return result
 
 
+def tier_e_split(samples: Sequence[Sample]) -> Split:
+    """Source: Day-7 Plan §6 -- the dedicated Tier-E evaluation split, mirroring
+    `negative_control_splits`'s per-scenario pattern. Every sample whose STREAM
+    RUN is the evasive tier (its own baseline + the evasive attack episode), so
+    the split is two-class. Never a partitioning constructor -- Tier E is
+    evaluation-only, never trained on (Eval Protocol §7)."""
+    filtered = tuple(s for s in samples if s.stream_tier == "evasive")
+    return Split(name="tier_e", samples=filtered)
+
+
 def clean_view(split: Split) -> Split:
     """A view: legitimate samples with entity_overlap=False, plus all attack samples. Never trains."""
     filtered = tuple(s for s in split.samples if s.is_attack or not s.entity_overlap)

@@ -96,26 +96,39 @@ def _seed_summary(values: List[float]) -> str:
     return f" (min={_fmt(min(values))}, median={_fmt(_statistics.median(values))}, max={_fmt(max(values))}, n_seeds={len(values)})"
 
 
-def _model_per_tier_rows(report: Report) -> List[str]:
+# Source: Day-7 Plan §6 -- the four attack tiers. `evasive` (Tier E) is
+# rendered from the DEDICATED `tier_e` split's report, never from the
+# temporal_test / holdout split (which carries no evasive samples).
+_REPORT_TIERS = ("easy", "medium", "hard", "evasive")
+
+
+def _per_tier_row(tier: str, tm) -> str:
+    if tm is None:
+        return f"| {tier} | 0 | n/a | n/a (empty) | n/a | n/a |"
+    return (
+        f"| {tier} | {tm.n} | {_fmt(tm.prevalence)} | {_fmt_recall(tm.recall_at_target_fpr)} | "
+        f"{_fmt(tm.ap_raw)} (pi={_fmt(tm.prevalence)}) | {_fmt(tm.ap_at_eval_prevalence)} |"
+    )
+
+
+def _model_per_tier_rows(report: Report, tier_e_report: "Report | None" = None) -> List[str]:
     rows = [
         "| tier | n | prevalence | recall@target_fpr | AP (raw pi) | AP (pi_eval) |",
         "|---|---|---|---|---|---|",
     ]
-    for tier in ("easy", "medium", "hard"):
-        tm = report.tier_breakdown.get(tier)
-        if tm is None:
-            rows.append(f"| {tier} | 0 | n/a | n/a (empty) | n/a | n/a |")
-            continue
-        rows.append(
-            f"| {tier} | {tm.n} | {_fmt(tm.prevalence)} | {_fmt_recall(tm.recall_at_target_fpr)} | "
-            f"{_fmt(tm.ap_raw)} (pi={_fmt(tm.prevalence)}) | {_fmt(tm.ap_at_eval_prevalence)} |"
-        )
-    rows.append("| evasive | -- | -- | pending (Day 7) | -- | -- |")
+    for tier in _REPORT_TIERS:
+        if tier == "evasive":
+            tm = tier_e_report.tier_breakdown.get("evasive") if tier_e_report is not None else None
+        else:
+            tm = report.tier_breakdown.get(tier)
+        rows.append(_per_tier_row(tier, tm))
     return rows
 
 
 def _block1_model_rows(
-    model_reports: Dict[str, Report], holdout_model_reports: Dict[str, Report],
+    model_reports: Dict[str, Report],
+    holdout_model_reports: Dict[str, Report],
+    tier_e_model_reports: "Dict[str, Report] | None" = None,
 ) -> List[str]:
     """Source: Day-5 Plan Step 11 -- l1-lgbm-v1 and B0 beside the sanity scorers."""
     lines = ["### Layer 1 -- `l1-lgbm-v1` and B0 (live rules)", ""]
@@ -130,6 +143,7 @@ def _block1_model_rows(
         "l1-lgbm-v1": "l1-lgbm-v1 (Layer 1 LightGBM detector, Platt-calibrated)",
         "rules-only-v0": "B0 -- live Day-1 rules (R1+R2+R3), read from attempt_score.score_raw",
     }
+    tier_e_model_reports = tier_e_model_reports or {}
     for mv in MODEL_ROW_VERSIONS:
         report = model_reports.get(mv)
         if report is None:
@@ -138,7 +152,7 @@ def _block1_model_rows(
         lines.extend(_provenance_header(report))
         lines.append(f"- ROC-AUC (overall): `{_fmt(report.roc_auc_value)}`")
         lines.append("")
-        lines.extend(_model_per_tier_rows(report))
+        lines.extend(_model_per_tier_rows(report, tier_e_model_reports.get(mv)))
         lines.append("")
     hr = holdout_model_reports.get("l1-lgbm-v1")
     if hr is not None:
@@ -157,7 +171,10 @@ def _block1_per_tier(
     runs: Sequence[HarnessRun],
     model_reports: Dict[str, Report] | None = None,
     holdout_model_reports: Dict[str, Report] | None = None,
+    tier_e_by_key: Dict[str, Report] | None = None,
+    tier_e_model_reports: Dict[str, Report] | None = None,
 ) -> List[str]:
+    tier_e_by_key = tier_e_by_key or {}
     multi_seed = len(runs) > 1
     lines = ["## Block 1 -- Per-tier recall@FPR and PR-AUC", ""]
     lines.append(
@@ -178,7 +195,12 @@ def _block1_per_tier(
         lines.append("")
         lines.append("| tier | n | prevalence | recall@target_fpr | AP (raw pi) | AP (pi_eval) |")
         lines.append("|---|---|---|---|---|---|")
-        for tier in ("easy", "medium", "hard"):
+        for tier in _REPORT_TIERS:
+            if tier == "evasive":
+                te = tier_e_by_key.get(key)
+                tm = te.tier_breakdown.get("evasive") if te is not None else None
+                lines.append(_per_tier_row("evasive", tm))
+                continue
             tm = report.tier_breakdown.get(tier)
             if tm is None:
                 lines.append(f"| {tier} | 0 | n/a | n/a (empty) | n/a | n/a |")
@@ -192,10 +214,57 @@ def _block1_per_tier(
                 f"| {tier} | {tm.n} | {_fmt(tm.prevalence)} | {recall_cell} | "
                 f"{ap_cell} | {_fmt(tm.ap_at_eval_prevalence)} |"
             )
-        lines.append("| evasive | -- | -- | pending (Day 7) | -- | -- |")
         lines.append("")
     if model_reports:
-        lines.extend(_block1_model_rows(model_reports, holdout_model_reports or {}))
+        lines.extend(_block1_model_rows(
+            model_reports, holdout_model_reports or {}, tier_e_model_reports or {}
+        ))
+    return lines
+
+
+def _tier_e_note(run: HarnessRun) -> List[str]:
+    """Source: Day-7 Plan §6 -- "what the attacker had to do to evade us is
+    itself the finding." The converged Tier-E parameter vector + the harm the
+    frozen detector let through before it would alert."""
+    te_reports = run.eval_reports.get("tier_e")
+    if not te_reports:
+        return []
+    from pathlib import Path
+
+    import yaml
+
+    lines = ["### Tier E -- adaptive adversary (config-space search vs the frozen detector)", ""]
+    try:
+        cfg = yaml.safe_load(
+            (Path(__file__).resolve().parents[1] / "config" / "attack_tiers.yaml").read_text(encoding="utf-8")
+        )
+        ev = cfg.get("evasive", {})
+
+        def _v(node):
+            return node.get("value") if isinstance(node, dict) else node
+
+        band = ev.get("amount_quantile_band", {})
+        lines.append(
+            "Converged parameter vector: "
+            f"attempts_per_hour={_v(ev.get('attempts_per_hour'))}, "
+            f"ip_pool_size={_v(ev.get('ip_pool_size'))}, "
+            f"distinct_cards={_v(ev.get('distinct_cards'))}, "
+            f"bin_pool_size={_v(ev.get('bin_pool_size'))}, "
+            f"amount_quantile_band=[{band.get('min')}, {band.get('max')}], "
+            f"episode_duration_s={_v(ev.get('episode_duration_s'))}."
+        )
+    except Exception:  # noqa: BLE001
+        lines.append("Converged parameter vector: see config/attack_tiers.yaml `evasive` block.")
+    te = next((r for r in te_reports if r.provenance.model_version in MODEL_ROW_VERSIONS), te_reports[0])
+    lines.append(
+        f"Evaluated on the dedicated `tier_e` split (n={te.n}, prevalence `{_fmt(te.prevalence)}`) -- "
+        "NEVER mixed into training or the temporal split (Eval Protocol §7). This is expected to be "
+        "the worst recall number in the deck: the search tuned pacing and spread directly against the "
+        "frozen Layer-1 + Layer-2 detector."
+    )
+    lines.append("")
+    lines.append("Full search trace (every candidate and why it was rejected): `eval/outputs/evade_search.json`.")
+    lines.append("")
     return lines
 
 
@@ -485,6 +554,18 @@ def render(runs: Sequence[HarnessRun], *, out_path: Path, seeds_used: int = 1, b
             if report.provenance.model_version in MODEL_ROW_VERSIONS:
                 holdout_model_reports[report.provenance.model_version] = report
 
+    # Source: Day-7 Plan §6 -- the dedicated `tier_e` split's reports, keyed
+    # both by sanity-scorer key and by model version, for the `evasive` row.
+    tier_e_by_key: Dict[str, Report] = {}
+    tier_e_model_reports: Dict[str, Report] = {}
+    for report in run.eval_reports.get("tier_e", []):
+        mv = report.provenance.model_version
+        key = next((k for k in SANITY_SCORER_ORDER if mv == f"none:{k}"), None)
+        if key is not None:
+            tier_e_by_key[key] = report
+        elif mv in MODEL_ROW_VERSIONS:
+            tier_e_model_reports[mv] = report
+
     lines: List[str] = []
     day = 5 if run.model_version else 4
     lines.append(f"# Tollgate -- Day {day} Evaluation Report")
@@ -500,7 +581,11 @@ def render(runs: Sequence[HarnessRun], *, out_path: Path, seeds_used: int = 1, b
     lines.append("")
 
     if reports_by_scorer:
-        lines.extend(_block1_per_tier(reports_by_scorer, runs, model_reports, holdout_model_reports))
+        lines.extend(_block1_per_tier(
+            reports_by_scorer, runs, model_reports, holdout_model_reports,
+            tier_e_by_key, tier_e_model_reports,
+        ))
+        lines.extend(_tier_e_note(run))
     else:
         lines.append("## Block 1 -- Per-tier recall@FPR and PR-AUC")
         lines.append("")

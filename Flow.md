@@ -33,9 +33,32 @@ POST /v1/score  (services/scorer/routes_score.py:score) │
   │     -- SHA-256(raw_key) looked up against merchant.api_key_hash
   │     -- None -> HTTPException(401)
   │
+  ├─ 3b. [Day 7] resolve_merchant_id_cached(state, x_tollgate_key)  services/scorer/auth.py
+  │     -- warm {api_key_hash -> merchant_id} cache on ScorerState; a locked
+  │        auth DB with a WARM cache still authenticates. AuthBackendUnavailable
+  │        (cold cache + unavailable DB) -> HTTPException(503) -- auth NEVER
+  │        fails open (Decision 89).
+  │
   ├─ 4. resolve_client_ip(request)                          services/scorer/net.py
   │     -- request.client.host, or X-Forwarded-For if the peer is a
   │        configured trusted edge (TRUSTED_EDGE_HOSTS)
+  │
+  ├─ 4a. [Day 7] admission -- state.admission.try_consume(merchant_id, now_ms)  services/scorer/admission.py
+  │     -- one lazy-refill TokenBucket per merchant (injected clock). If empty:
+  │        state.window_store.shed_incr(merchant_id, ip, now_ms, shed_ttl_ms)
+  │        -> tg:{m}:shed:{ip} (MERCHANT_SCOPED_KEY_RE, 60 s TTL)
+  │        -> tier = THROTTLE if n >= R1 threshold else ALLOW   (R1 ONLY, Decision 15)
+  │        -> X-Tollgate-Shed: 1 header; spool a shed=True ScoreRecord with a
+  │           zero-filled feature_snapshot (degraded_reason "shed"); RETURN.
+  │           compute_features / model / Layer 2 are NEVER reached.
+  │
+  ├─ 4b. [Day 7] score_attempt(...) is wrapped in try/except Exception (fail-open).
+  │     On ANY fault: state.availability.record_fail_open(merchant_id, now_ms, reason);
+  │     spool an `allow` ScoreRecord (degraded_reason "fail_open:{window_store|model}");
+  │     publish an SSE event with availability.alert; RETURN Decision.ALLOW.
+  │     The response is ALWAYS `allow` (Decision 89); the budget governs alerting,
+  │     not the tier. Redis has socket_timeout/socket_connect_timeout=150 ms so a
+  │     dead socket raises promptly (asyncio.wait_for cannot bound a sync call).
   │                                                          ▼
   │                    services/scorer/scoring.py::score_attempt(state, merchant_id, ip, body,
   │                                                              clock=None, ulid=None, ...)
@@ -50,7 +73,11 @@ POST /v1/score  (services/scorer/routes_score.py:score) │
   │             (EVALSHA windows.lua): SET NX idem -> ZADD every window ->
   │             ZREMRANGEBYSCORE trim -> ZCARD/ZRANGE read -> eidr SADD ->
   │             card24 INCR -> CUSUM bucket HINCRBY, all in one call
-  │       -> FeatureVector (24 canonical features + trusted/degraded_reason)
+  │       -> FeatureVector (24 canonical features + trusted/degraded_reason + idem_digest)
+  │     [Day 7] if features.idempotent_replay AND state.decision_cache has idem_digest:
+  │       -> return ScoreResponse(stored attempt_uid, stored decision) WITHOUT a spool
+  │          append or an SSE publish -- 39 of 40 concurrent identical submissions get
+  │          the SET-NX winner's decision replayed, one row, one increment (Decision 86).
   │     DayOneRules.evaluate_from_features(features)          packages/detect/rules.py
   │       -- reads R1/R2/R3's three statistics from the vector already fetched above
   │          (the locked evaluate()/record_and_read() path is untouched and still used
@@ -682,10 +709,92 @@ before_alert = 32`, incident -> ESCALATED -> `challenge` in force).
 
 ---
 
+## 15. [Day 7] Security hardening — FULL → RULES-ONLY/SHED → FAIL-OPEN
+
+All three rungs live in `services/scorer/routes_score.py`, **outside** the Layer-2 atomic
+block (Decision 87 / §14.3). `_resolve_layer2` still contains no `await` — the
+100-concurrent-vs-sequential CUSUM guarantee (`test_concurrent_cusum.py`) depends on it.
+
+```
+POST /v1/score
+  ├─ auth (cached; 503 on cold-cache + locked DB, NEVER allow)
+  ├─ FULL:            state.admission.try_consume(merchant_id, now_ms) == True
+  │                     -> score_attempt() as Day 6 (+ SSE `availability` field)
+  ├─ RULES-ONLY/SHED: bucket empty -> shed_incr(tg:{m}:shed:{ip}), R1-only tier,
+  │                     X-Tollgate-Shed: 1, shed=True ScoreRecord, no score_path() call
+  └─ FAIL-OPEN:       score_attempt() raised -> AvailabilityMonitor.record_fail_open,
+                        `allow` ScoreRecord (degraded_reason fail_open:<reason>),
+                        one ERROR log + `alert` on SSE per clock window, response = allow
+```
+
+**`POST /v1/outcome`** (`services/scorer/routes_outcome.py`, registered in `app.py`):
+
+```
+secret = os.environ["TOLLGATE_OUTCOME_SECRET"]  (unset -> 503, logged once)
+  ├─ headers present? (X-Tollgate-Key/-Signature/-Timestamp/-Nonce)   else 401
+  ├─ |now_ms - ts_ms| <= 300_000                                       else 401 (stale)
+  ├─ merchant = merchant WHERE api_key_hash = sha256(key)              else 401
+  ├─ hmac.compare_digest(sha256(secret), merchant.outcome_hmac_key_hash) else 401 (not bound)
+  ├─ sig == hmac_sha256(secret, f"{merchant_id}\n{ts_ms}\n{nonce}\n{sha256(canonical_body)}")  else 401
+  ├─ attempt_uid FROM auth_attempt WHERE (merchant_id, event_id)       else 404
+  ├─ INSERT outcome_nonce(nonce)  -- IntegrityError -> 409 (replay), no auth_outcome row
+  └─ INSERT OR IGNORE auth_outcome(attempt_uid, ..., sig_verified=1); commit -> {"status":"recorded"}
+```
+Canonical body = `json.dumps(body.model_dump(), sort_keys=True, separators=(",",":"))`.
+No schema change (Decision 88/90). The three outcome-derived model features
+(`decline_rate_per_ip_5m`, `invalid_cvv_share_ip_5m`, `outcome_coverage_ratio`) still read
+`0.0` — feeding them needs new outcome-keyed windows, out of Day-7 scope.
+
+**Narrator admission boundary** (`packages/narrator/`): at incident-open ONLY,
+`scoring.py::_resolve_layer2` calls `build_bundle(entity_type=, pseudonym=, decision=,
+evaluation=)` — the single admission point; it accepts **no `user_agent`**, no raw
+identifier, no free text. `assemble_prompt(bundle)` renders the typed slots into the string
+a backend would dispatch and asserts `CHARSET_RE` **before returning** (input-side gate);
+`template.render(bundle)["narrative"]` is stored on `incident.narrative` /
+`narrative_source="template"` through the existing spool → drainer path. Deterministic,
+I/O-free, not an LLM call. A hostile UA is retained in `auth_attempt.client_evidence` as
+evidence but has no path to the prompt (`test_narrator_injection.py`). Gemini remains Day 8.
+
+## 16. [Day 7] Tier E — the adaptive adversary
+
+```
+scripts/train_l1  (frozen; existing models/ used)
+   │
+   ▼
+packages/simulator/evade.py::search(seed, budget=200, patience=40, theta_challenge, evaluate_fn)
+   -- PURE: imports only packages.simulator.rng; SubStream(seed, "evade:<field>") draws;
+      searches the SIX params generate_attack_episode consumes (Decision 92);
+      theta_challenge = pinned policy_config thresholds["challenge"] (derived, Decision 70);
+      evaluate_fn (scripts/search_evasive.py) replays each candidate through the frozen
+      InMemoryWindowStore + DayOneRules + models/ bundle + _load_layer2 detector via
+      ReplayDriver.run(stream=...), reading score_calibrated + incident from a recording spool.
+   │  objective: maximise cards_validated_per_hour s.t. mean(score_calibrated) < theta_challenge
+   │             AND no incident opened; -inf otherwise.
+   ▼
+config/attack_tiers.yaml `evasive` block rewritten (A10-clean sources) + eval/outputs/evade_search.json
+   │
+   ▼
+scripts/search_evasive --append-corpus  -> eval.corpus.build_tier_e_runs(42) (run_index 19,
+   m-eval-19, seed+900) -> replay_corpus(rebuild=False) into data/corpus/tollgate.db
+   -> episode_truth.evasion_params = json.dumps({six searched leaves})  (no schema change)
+   │
+   ▼
+eval.harness --write-eval-run
+   -- build_full_dataset() UNCHANGED; build_tier_e_dataset(42) filters build_runs+build_tier_e_runs
+      to stream_tier=="evasive"; run_all() evaluates the dedicated `tier_e` split with the same
+      scorers; evaluate()/write_eval_run/report.py per-tier loops gain `evasive`; the eval_run
+      `per_tier.evasive` entry is sourced from the `tier_e` split, NEVER from temporal_test
+      (Decision 93). report.md gains the `evasive` row + a Tier-E parameter-vector note.
+```
+
 ## 10. What does NOT exist yet (explicitly deferred)
 
-- No `/v1/outcome` route (Day 7); `decline_rate_per_ip_5m`, `invalid_cvv_share_ip_5m`,
-  `outcome_coverage_ratio` stay at their Day-3 neutral `0.0`.
+- [Day 7 DONE] `POST /v1/outcome` exists (route + HMAC / nonce / 5-minute staleness
+  verification, §15). `decline_rate_per_ip_5m`, `invalid_cvv_share_ip_5m`,
+  `outcome_coverage_ratio` **still** stay at `0.0` — the route persists to `auth_outcome`
+  and stops there; feeding those features needs new outcome-keyed windows, which no Day-7
+  deliverable names (Decision 90). `/v1/outcome` returns `503` unless
+  `TOLLGATE_OUTCOME_SECRET` is set.
 - No `store_baseline` row (Day 4); `distinct_cards_per_ip_5m_q`,
   `distinct_cards_per_ipua_5m_q`, `amount_percentile_vs_store`, `store_volume_deviation_
   sigma`, `store_decline_rate_deviation_sigma`, `foreign_bin_share_sigma` stay at `0.0`.
@@ -708,15 +817,24 @@ before_alert = 32`, incident -> ESCALATED -> `challenge` in force).
   Gemini narrator are Day 8 -- Day 6 only produces the proposed-but-unconfirmed
   `enforcement_action` rows those screens will act on.
 - No D3 dashboard screen, no design tokens, no Stream Rail, no Gemini narrator backend
-  (Day 8); the template narrator (§11 above) is not yet called from `score_attempt()`.
+  (Day 8). [Day 7 DONE] the template narrator IS now called from `score_attempt()` at
+  incident-open, through the `build_bundle()` / `assemble_prompt()` admission boundary
+  (§15); `NARRATOR_BACKEND != "template"` still raises (Gemini is Day 8).
 - No BIN metadata join -- `tier_ladder` is hardcoded `"domestic"`, `bin_is_foreign_issued`
   and `foreign_bin_share_5m` stay at `0.0`.
-- [Day 4] `medium` attack tier and all seven negative-control scenarios now exist
-  (`config/attack_tiers.yaml`, `packages/simulator/negative.py`); only `evasive` stays
-  `pending: "Day 7"`. No flood/kill-scorer DC toggles (Day 7).
-- No stream authentication -- `/v1/stream` publishes `rules_fired` and
-  `feature_snapshot` unauthenticated; accepted for the loopback-bound demo
-  (Threat Model v2 addendum, decisions.md decision 34), hardened Day 7.
+- [Day 4 -> Day 7 DONE] `medium` and now `evasive` attack tiers and all seven
+  negative-control scenarios exist (`config/attack_tiers.yaml`,
+  `packages/simulator/negative.py`); the `evasive` block is populated by the Tier-E search
+  (§16) and is **no longer `pending`**. No flood/kill-scorer DC toggles (D3/D6 UI, Day 8).
+- [Day 7 RE-DEFERRED] `/v1/stream` authentication. Decision 34 / Flow.md §10 / Threat Model
+  §9 annotated it "Day 7", but the approved Day-7 deliverable list (§4 A–F) omits it, so it
+  is **explicitly re-deferred past Day 7** under the minimality rule (Decision 94).
+  `/v1/stream` still binds loopback only and publishes `rules_fired` / `feature_snapshot`
+  unauthenticated; the residual disclosure risk is unchanged from Day 6.
+- [Day 7] The token bucket, the fail-open availability monitor, and the stored-decision
+  cache are **in-process on `ScorerState`** (Decision 86/87) — single Uvicorn worker only,
+  not shared across workers and not surviving a restart. This is the same trade Decision 71
+  already made for Layer-2 state.
 - `tests/fixtures/handmade_40.jsonl` (the independent human-authored oracle) has not been
   supplied yet; `tests/acceptance/test_handmade_40.py` (Day-3 feature values) AND
   `tests/acceptance/test_handmade_40_incident.py` (Day-6 incident alert point) both xfail

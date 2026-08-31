@@ -130,6 +130,31 @@ def build_runs(
     return runs
 
 
+# Source: Day-7 Plan §6 -- Tier E is NEVER mixed into build_runs(). Eval
+# Protocol §7 ("never in training, generated after the model is frozen") and
+# the Day-5 characterization snapshot (§12 trap 1) both forbid it: an extra
+# run in build_runs() would move temporal_split's boundary. Tier E gets its
+# own run, `run_index` continuing AFTER the existing 19 (12 tier blocks + 7
+# negative-control scenarios), so every existing `m-eval-NN` / `run_index` is
+# stable. Its seed is offset so its sub-streams are disjoint from build_runs'.
+_TIER_E_SEED_OFFSET = 900
+_N_EXISTING_RUNS = DEFAULT_N_BLOCKS_PER_TIER * len(_TIERS) + len(SCENARIOS)  # 19
+
+
+def build_tier_e_runs(seed: int, *, hours: int = DEFAULT_HOURS) -> List[CorpusRun]:
+    """The single Tier-E run. Reads `config/attack_tiers.yaml`'s populated
+    `evasive` block via `build_stream(tier="evasive")` -- raises if the Tier-E
+    search was cut and the block is still `pending`."""
+    output = build_stream(
+        seed=seed + _TIER_E_SEED_OFFSET, tier="evasive", hours=hours, epoch_ms=0
+    )
+    return [CorpusRun(
+        run_index=_N_EXISTING_RUNS,
+        merchant_id=_merchant_id(_N_EXISTING_RUNS),
+        stream_tier="evasive", scenario=None, output=output, epoch_ms=0,
+    )]
+
+
 def _connect(db_path: Path) -> sqlite3.Connection:
     from packages.storage.db import connect  # local: keep packages.storage off the module import graph
 

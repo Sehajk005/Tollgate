@@ -49,6 +49,8 @@ class InMemoryWindowStore:
         self._eidr: Dict[str, set] = {}  # event_id -> {payload_digest, ...}
         self._card24: Dict[str, Tuple[int, int]] = {}  # card_hash -> (count, expire_at_ms)
         self._cusum: Dict[str, Tuple[int, int]] = {}  # merchant_id -> (bucket_index, count)
+        # Day-7 Plan §4 Step 3 -- shed counter: key -> (count, expire_at_ms).
+        self._shed: Dict[str, Tuple[int, int]] = {}
 
     def record_and_read(self, request: WindowRequest) -> WindowSnapshot:
         key = window_key(
@@ -146,6 +148,25 @@ class InMemoryWindowStore:
                 degraded_reason=None,
             )
 
+    def shed_incr(self, merchant_id: str, ip: str, now_ms: int, ttl_ms: int) -> int:
+        """
+        Source: Day-7 Plan §4 Step 3 -- the merchant-scoped shed counter
+        `tg:{m}:shed:{ip}`, mirroring the Redis backend's INCR + PEXPIRE.
+        Expires `ttl_ms` after the FIRST increment (like Redis SET ... PX on
+        the first INCR), driven by the injected `now_ms` -- no wall clock.
+        """
+        key = f"tg:{merchant_id}:shed:{ip}"
+        with self._lock:
+            state = self._shed.get(key)
+            if state is None or state[1] <= now_ms:
+                count = 1
+                expire_at = now_ms + ttl_ms
+            else:
+                count = state[0] + 1
+                expire_at = state[1]
+            self._shed[key] = (count, expire_at)
+            return count
+
     def clear(self) -> None:
         """
         Source: Day-2 Plan Decision 36 -- Reset is required, not convenient:
@@ -159,3 +180,4 @@ class InMemoryWindowStore:
             self._eidr.clear()
             self._card24.clear()
             self._cusum.clear()
+            self._shed.clear()
