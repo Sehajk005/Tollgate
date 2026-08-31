@@ -3619,3 +3619,53 @@ serialiser over the `HarnessRun` object `run_all()` already returns.
 `eval/d6.py` (new), `eval/harness.py` (`main` writes `d6.json`), `.gitignore`,
 `services/dashboard/vite.config.js` (`server.fs.allow`),
 `services/dashboard/src/screens/D6Metrics.jsx`, `services/dashboard/src/components/charts/`.
+
+## Decision 101: the scorer loads a repo-root `.env` at startup; the Gemini backend gains a model fallback chain and a shutdown drain
+
+### Context
+Every backend environment variable — `GEMINI_API_KEY`, `NARRATOR_BACKEND`,
+`TOLLGATE_REDIS_URL`, `TOLLGATE_OUTCOME_SECRET` — could only be supplied as an inline
+`KEY=val uvicorn ...` prefix; nothing loaded a `.env` (`03-TRD-v2.md:425`'s
+`cp .env.example .env` referenced a file that never existed). Two gaps in the Day-8 Gemini
+path (Decision 98) also surfaced once a real key was in view: `GEMINI_MODEL` was hard-coded
+to `gemini-1.5-flash` (a model Google has since retired on `v1beta:generateContent`, so a
+misfire is a silent 100 % fallback), and `ScorerState.gemini_tasks` was never awaited on
+shutdown — an in-flight narration was abandoned and its `narrator_call` row could be lost
+until the next byte-0 re-drain.
+
+### Decision
+`packages/config/env.py` (new) centralises the names, defaults and parsing of every scorer
+env var. `load_env_file()` runs once in the `create_app` lifespan **before**
+`ScorerState.build_default()`, calling `dotenv.load_dotenv(find_dotenv(usecwd=True),
+override=False)` — a real process variable always wins, so every existing inline invocation
+and every test `monkeypatch.setenv` is unaffected; the import is guarded and a missing file
+or missing `python-dotenv` is a silent no-op (`TOLLGATE_SKIP_DOTENV=1` forces the skip). The
+accessors are thin `os.environ` reads, never cached, because `eval/corpus.py` writes
+`NARRATOR_ENABLED` at runtime and the narrator tests mutate env after import.
+`validate_startup()` logs a `config:` WARNING (root logger sits at WARNING — the level is
+load-bearing) for a misconfigured narrator: backend `gemini` with no key, key set with a
+non-`gemini` backend, an unknown backend, or the disabled flag — the key value is never
+logged. `call_gemini` takes `models: Sequence[str]` (default chain
+`gemini-2.0-flash, gemini-1.5-flash`, overridable by `GEMINI_MODELS`; the legacy single
+`GEMINI_MODEL` becomes a one-element chain, byte-for-byte the prior behaviour): a model that
+returns HTTP **400/404** advances to the next; a 429, a timeout, a connection error or any
+other non-200 raises immediately, so one `call_gemini` invocation is still one narration
+attempt and one `narrator_call` row (Decision 97). The lifespan `finally` drains
+`gemini_tasks` with a 10 s bound (~2× the 8 s call timeout; stragglers cancelled) and then
+runs a final idempotent `drainer.drain_from_start()` so a row appended between the 50 ms
+poll and `drainer.stop()` still lands. `python-dotenv` moves from a transitive dependency of
+`uvicorn[standard]` to an explicit base `dependency`.
+
+### Specification impact
+Makes `03-TRD-v2.md:425`'s `cp .env.example .env` step real for the first time. No schema
+change. Decision 98's out-of-band contract and Decision 97's one-row-per-narration rule are
+preserved exactly.
+
+### Implementation impact
+`packages/config/env.py` (new), `.env.example` (new, committed via `.gitignore`'s
+`!.env.example`), `packages/narrator/gemini.py` (`models=` chain, `GeminiResponse.model`),
+`services/scorer/scoring.py` (`_run_gemini_narration` reads through the module),
+`services/scorer/app.py` (lifespan load + validate + shutdown drain), `pyproject.toml` /
+`uv.lock`. `services/scorer/deps.py`, `services/scorer/routes_outcome.py` and
+`packages/narrator/template.py` keep their direct `os.environ` reads — the `.env` load
+populates `os.environ`, so routing them through the module was needless churn.

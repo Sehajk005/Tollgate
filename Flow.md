@@ -954,6 +954,14 @@ No exception ever escapes. The drainer guards `payload["attempt"]`/`["score"]` a
 `payload.get("narrator_call", [])`. One `narrator_call` row per narration attempt
 (Decision 97). `eval/corpus.py` forces `NARRATOR_ENABLED=false` for the replay.
 
+`call_gemini` takes an in-order `models` chain (Decision 101, default
+`gemini-2.0-flash, gemini-1.5-flash` from `GEMINI_MODELS`; the legacy `GEMINI_MODEL` is a
+one-element chain): a model returning HTTP 400/404 advances to the next, every other fault
+(429, timeout, connection, any other non-200) raises at once -- still one narration attempt,
+one row. `create_app`'s lifespan `finally` awaits any in-flight `gemini_tasks` (10 s bound,
+stragglers cancelled) then runs a final `drainer.drain_from_start()` so a row appended
+between the 50 ms poll and `drainer.stop()` still lands.
+
 ### 17.6 Storefront S1/S3/S5/S6/S7
 
 `services/storefront/src/App.jsx` is a screen state machine (no router): S1 -> S2 ->
@@ -963,3 +971,19 @@ No exception ever escapes. The drainer guards `payload["attempt"]`/`["score"]` a
 equal). S2 owns the routing (`POST /v1/score` -> `resolveClientOutcome` -> `screenForOutcome`)
 and, behind `?demo=1`, shows a live `/v1/score` latency readout and a tier badge that renders
 `shed` and `fail_open`.
+
+### 17.7 Environment configuration (Decision 101)
+
+`packages/config/env.py` is the single place that names every scorer env var
+(`NARRATOR_BACKEND`, `NARRATOR_ENABLED`, `GEMINI_API_KEY`, `GEMINI_MODELS` / `GEMINI_MODEL`,
+`TOLLGATE_REDIS_URL`, `TOLLGATE_OUTCOME_SECRET`) with its default. `create_app`'s lifespan,
+before `ScorerState.build_default()`, calls `load_env_file()` -> `dotenv.load_dotenv(
+find_dotenv(usecwd=True), override=False)`: a repo-root `.env` (`cp .env.example .env`) is
+read, but a real process variable and any test `monkeypatch.setenv` still win. Missing file,
+missing `python-dotenv`, or `TOLLGATE_SKIP_DOTENV=1` -> silent no-op. The accessors are
+uncached `os.environ` reads (so `eval/corpus.py`'s runtime `NARRATOR_ENABLED` write and the
+narrator tests' post-import monkeypatching keep working). `validate_startup()` then logs a
+`config:` WARNING for a misconfigured narrator (backend `gemini` with no key, key with a
+non-`gemini` backend, unknown backend, disabled flag) -- the key value is never logged.
+`deps.py` / `routes_outcome.py` / `template.py` keep their direct `os.environ` reads; the
+`.env` load populates `os.environ` so they see the same values.

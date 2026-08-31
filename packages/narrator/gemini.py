@@ -22,11 +22,22 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from typing import Optional, Sequence
 
 import httpx
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 DEFAULT_MODEL = "gemini-1.5-flash"
+# The in-order fallback chain used when the caller does not pass an explicit
+# `models=`. Kept in sync with packages/config/env.DEFAULT_MODELS -- that
+# module is the configuration authority; this is the transport-layer default
+# for a direct call_gemini() with neither `model` nor `models` given.
+DEFAULT_MODELS: tuple[str, ...] = ("gemini-2.0-flash", "gemini-1.5-flash")
+# Only these HTTP statuses advance the chain to the next model. A 429, a
+# timeout, a connection error, or any other non-200 raises immediately and
+# is handled as a single failed narration attempt by the caller -- turning
+# them into retries would break the "exactly one narrator_call row" contract.
+_ADVANCE_STATUSES = (400, 404)
 DEFAULT_TIMEOUT_S = 8.0
 MAX_OUTPUT_TOKENS = 512
 
@@ -43,7 +54,8 @@ class GeminiError(Exception):
 @dataclass(frozen=True)
 class GeminiResponse:
     text: str          # the model's raw output (which we asked to be JSON)
-    latency_ms: int
+    latency_ms: int    # total wall-clock across every model tried
+    model: str = ""    # the model that actually served the 200 (for logging)
 
 
 def build_request_body(prompt: str) -> dict:
@@ -65,34 +77,54 @@ async def call_gemini(
     *,
     api_key: str,
     model: str = DEFAULT_MODEL,
+    models: Optional[Sequence[str]] = None,
     timeout_s: float = DEFAULT_TIMEOUT_S,
     transport=None,
 ) -> GeminiResponse:
-    """POST the prompt, return the candidate text + call latency. `transport`
-    is an injected `httpx` transport (tests pass `httpx.MockTransport`)."""
-    url = GEMINI_URL.format(model=model)
+    """POST the prompt, return the candidate text + total latency + the model
+    that served it. `transport` is an injected `httpx` transport (tests pass
+    `httpx.MockTransport`).
+
+    `models` is an in-order fallback chain: on an HTTP 400/404 (model retired
+    or unknown) the next model is tried. Every other fault -- 429, timeout,
+    connection, any other non-200, an unparseable body -- raises immediately,
+    so one call_gemini() invocation is still one narration attempt. When
+    `models` is omitted the single `model` is used, byte-for-byte the prior
+    behaviour.
+    """
+    chain = [m for m in (list(models) if models else [model]) if m]
+    if not chain:
+        chain = [DEFAULT_MODEL]
     body = build_request_body(prompt)
 
     loop = asyncio.get_running_loop()
     t0 = loop.time()
-    try:
-        async with httpx.AsyncClient(transport=transport, timeout=timeout_s) as client:
-            resp = await client.post(url, params={"key": api_key}, json=body)
-    except httpx.TimeoutException as exc:
-        raise GeminiError("timeout") from exc
-    except httpx.TransportError as exc:
-        raise GeminiError("connection") from exc
-    latency_ms = int((loop.time() - t0) * 1000)
+    advanceable: Optional[GeminiError] = None
 
-    if resp.status_code == 429:
-        raise GeminiError("http_429")
-    if resp.status_code != 200:
-        raise GeminiError(f"http_{resp.status_code}")
+    async with httpx.AsyncClient(transport=transport, timeout=timeout_s) as client:
+        for i, name in enumerate(chain):
+            url = GEMINI_URL.format(model=name)
+            try:
+                resp = await client.post(url, params={"key": api_key}, json=body)
+            except httpx.TimeoutException as exc:
+                raise GeminiError("timeout") from exc
+            except httpx.TransportError as exc:
+                raise GeminiError("connection") from exc
 
-    try:
-        payload = resp.json()
-        text = payload["candidates"][0]["content"]["parts"][0]["text"]
-    except (KeyError, IndexError, TypeError, ValueError) as exc:
-        raise GeminiError("bad_response") from exc
+            if resp.status_code == 200:
+                latency_ms = int((loop.time() - t0) * 1000)
+                try:
+                    payload = resp.json()
+                    text = payload["candidates"][0]["content"]["parts"][0]["text"]
+                except (KeyError, IndexError, TypeError, ValueError) as exc:
+                    raise GeminiError("bad_response") from exc
+                return GeminiResponse(text=str(text), latency_ms=latency_ms, model=name)
 
-    return GeminiResponse(text=str(text), latency_ms=latency_ms)
+            if resp.status_code == 429:
+                raise GeminiError("http_429")
+            if resp.status_code in _ADVANCE_STATUSES and i < len(chain) - 1:
+                advanceable = GeminiError(f"http_{resp.status_code}")
+                continue
+            raise GeminiError(f"http_{resp.status_code}")
+
+    raise advanceable if advanceable is not None else GeminiError("bad_response")

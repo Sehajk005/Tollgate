@@ -86,9 +86,16 @@ never a threat colour). SSE drops fall back to 5-second polling of
 ### The Gemini narrator
 
 ```
-NARRATOR_BACKEND=gemini GEMINI_API_KEY=<key> \
-  uv run uvicorn services.scorer.app:create_app --factory --port 8080
+cp .env.example .env          # then set NARRATOR_BACKEND=gemini and GEMINI_API_KEY
+uv run uvicorn services.scorer.app:create_app --factory --port 8080
 ```
+
+The scorer loads a repo-root `.env` at startup (`packages/config/env.py`,
+`override=False` — a real `KEY=val uvicorn ...` prefix or `export` still wins,
+so the old inline form keeps working). With no `.env` and nothing exported the
+narrator stays on the template. A misconfiguration — `NARRATOR_BACKEND=gemini`
+with no key, an unknown backend — is logged as a `config:` warning at startup
+instead of silently falling back.
 
 - `NARRATOR_BACKEND` (default `template`) selects the backend. With `gemini`
   and a `GEMINI_API_KEY`, a Gemini call is dispatched **out of band** — after
@@ -97,6 +104,10 @@ NARRATOR_BACKEND=gemini GEMINI_API_KEY=<key> \
   is the always-available fallback; invalid JSON, a 429, a timeout, a
   connection failure, or a charset violation all leave the template narrative
   intact and the operator sees no error.
+- `GEMINI_MODELS` (comma-separated, default `gemini-2.0-flash,gemini-1.5-flash`)
+  is an in-order fallback chain: a model that returns HTTP 404/400 advances to
+  the next; any other fault falls straight back to the template. The legacy
+  single `GEMINI_MODEL` is still honoured.
 - `NARRATOR_ENABLED=false` disables Gemini entirely (the template is used).
   The evaluation harness forces this — a harness run makes **zero** Gemini
   calls.
@@ -141,6 +152,12 @@ does not survive a restart and would not be shared across multiple Uvicorn
 workers). `docker-compose.yml` also defines a `redis-small` service
 (`maxmemory 2mb`, `allkeys-lru`); it exists only for the eviction-vs-TTL
 test and the application never connects to it.
+
+The inline `KEY=val` prefixes above (`TOLLGATE_REDIS_URL`, `TOLLGATE_OUTCOME_SECRET`,
+the narrator vars) can all instead live in a repo-root `.env` — `cp .env.example
+.env` and edit. The scorer loads it once at startup (`packages/config/env.py`,
+`override=False` — a real exported variable or an inline prefix still wins).
+`.env` is gitignored; only `.env.example` is committed.
 
 ## Evaluation harness (Day 4)
 

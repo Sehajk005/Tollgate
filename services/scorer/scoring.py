@@ -365,6 +365,7 @@ def _narrator_call_id(incident_id: str, now_ms: int, backend: str) -> str:
 async def _run_gemini_narration(state: ScorerState, *, incident, prompt: str, now_ms: int) -> None:
     """One narration attempt. Spools an incident+narrator_call payload on
     success, a narrator_call-only payload on failure. Never raises."""
+    from packages.config.env import gemini_api_key, gemini_models
     from packages.narrator.gemini import GeminiError, call_gemini
     from packages.narrator.template import CHARSET_RE, MAX_NARRATIVE_CHARS
 
@@ -373,15 +374,21 @@ async def _run_gemini_narration(state: ScorerState, *, incident, prompt: str, no
     status = "ok"
     latency_ms: Optional[int] = None
     llm_narrative: Optional[str] = None
+    models = gemini_models()
 
     try:
         resp = await call_gemini(
             prompt,
-            api_key=os.environ.get("GEMINI_API_KEY", ""),
-            model=os.environ.get("GEMINI_MODEL", "gemini-1.5-flash"),
+            api_key=gemini_api_key(),
+            models=models,
             transport=state.gemini_transport,
         )
         latency_ms = resp.latency_ms
+        if resp.model and models and resp.model != models[0]:
+            logger.warning(
+                "gemini narration served by fallback model %s (primary %s unavailable)",
+                resp.model, models[0],
+            )
         data = json.loads(resp.text)  # -> ValueError (invalid_json) on bad JSON
         if not isinstance(data, dict) or set(data) != {"narrative", "confidence_note"}:
             raise ValueError("schema")
