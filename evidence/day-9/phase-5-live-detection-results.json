@@ -1,0 +1,151 @@
+{
+  "run_id": "01M1K8FHDN42XJNT7ATKHPARSR",
+  "final_status": {
+    "state": "finished",
+    "tier": "easy",
+    "seed": 42,
+    "speed": 60,
+    "sent": 821,
+    "total": 821,
+    "episode_id": "ep-easy-42-3600000",
+    "virtual_time_ms": 1788437355977,
+    "run_id": "01M1K8FHDN42XJNT7ATKHPARSR",
+    "epoch_ms": 1788426569145,
+    "error": null,
+    "stop_reason": null,
+    "started_at_ms": 1788426569142,
+    "updated_at_ms": 1788426694022,
+    "pace_from": "episode",
+    "terminal": true
+  },
+  "event_count_ok": true,
+  "decision_histogram": {
+    "allow": 269,
+    "challenge": 552
+  },
+  "rules_fired_seen": [
+    "attempts_per_ip_60s",
+    "distinct_cards_per_bin_5m",
+    "distinct_cards_per_ip_5m"
+  ],
+  "n_scored_this_run": 821,
+  "control_arm_count": 29,
+  "auto_ceiling_respected": true,
+  "incidents": [
+    {
+      "incident_id": "IF0A743CEB8100744BCADA2415",
+      "state": "ESCALATED",
+      "detector": "drift",
+      "peak_tier": "challenge",
+      "opened_at": 1788430245513,
+      "attempts_before_alert": 32,
+      "cards_exposed_before_alert": 32,
+      "time_to_detect_s": 75.954,
+      "cusum_stat_at_alert": 0.0
+    },
+    {
+      "incident_id": "I75C8EDA7370D8C8AF56F52978",
+      "state": "ESCALATED",
+      "detector": "drift",
+      "peak_tier": "challenge",
+      "opened_at": 1788430250615,
+      "attempts_before_alert": 36,
+      "cards_exposed_before_alert": 32,
+      "time_to_detect_s": 78.385,
+      "cusum_stat_at_alert": 0.0
+    }
+  ],
+  "incident_entities": [
+    {
+      "incident_id": "I75C8EDA7370D8C8AF56F52978",
+      "entity_type": "ip",
+      "entity_key": "198.51.100.249"
+    },
+    {
+      "incident_id": "IF0A743CEB8100744BCADA2415",
+      "entity_type": "ip",
+      "entity_key": "198.51.100.57"
+    }
+  ],
+  "entity_types": [
+    "ip"
+  ],
+  "entity_resolution_ok": true,
+  "enforcement_actions": [
+    {
+      "action_id": "AC132A675C4B2E1B686D9B12DF",
+      "incident_id": "IF0A743CEB8100744BCADA2415",
+      "entity_type": "ip",
+      "entity_key": "198.51.100.57",
+      "tier": "challenge",
+      "requires_confirmation": 0,
+      "confirmed_by": "auto",
+      "applied_at": 1788430245513,
+      "released_at": null,
+      "expires_at": 1788431145513
+    },
+    {
+      "action_id": "AEA89FEB1E007FEFF4734A1BF4",
+      "incident_id": "I75C8EDA7370D8C8AF56F52978",
+      "entity_type": "ip",
+      "entity_key": "198.51.100.249",
+      "tier": "challenge",
+      "requires_confirmation": 0,
+      "confirmed_by": "auto",
+      "applied_at": 1788430250615,
+      "released_at": null,
+      "expires_at": 1788431150615
+    }
+  ],
+  "proposed_are_unconfirmed": true,
+  "sse_enforcement_last": {
+    "active": 0,
+    "k_max": 10,
+    "advisory_mode": false
+  },
+  "resolve_result": {
+    "status": 200,
+    "body": {
+      "status": "resolved",
+      "resolution": "true_positive",
+      "closed_at": 1788426700037
+    }
+  },
+  "incident_after_resolve": [
+    {
+      "incident_id": "IF0A743CEB8100744BCADA2415",
+      "state": "CLOSED"
+    }
+  ],
+  "enforcement_after_resolve": [
+    {
+      "action_id": "AC132A675C4B2E1B686D9B12DF",
+      "released_at": 1788426700037
+    }
+  ],
+  "all_released_after_resolve": true,
+  "final_reset": {
+    "status": 200,
+    "cleared": {
+      "window_store": 3234,
+      "threat": true,
+      "layer2": true,
+      "incidents": true,
+      "policy_engine": true,
+      "decision_cache": true,
+      "persisted_incidents": 1
+    },
+    "degraded": false
+  },
+  "checks": {
+    "event_count_easy_821": true,
+    "R1_R2_R3_floors_fired": false,
+    "auto_ceiling_respected": true,
+    "incident_opened": true,
+    "incident_escalated_or_terminal": true,
+    "entity_resolution_ip_ipua_card": true,
+    "proposed_enforcement_unconfirmed": true,
+    "resolve_released_all_enforcement": true,
+    "reset_returns_200_cleared": true
+  }
+}

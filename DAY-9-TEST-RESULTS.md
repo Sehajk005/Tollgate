@@ -199,3 +199,19 @@ Full detail: `evidence/day-9/phase-4-api-qa.md` · harness + raw results:
 
 **Phase 4 verdict: GREEN.** No P0/P1/P2. Two P3 defects (DEF-D9-005, DEF-D9-006),
 both Phase-13 candidates, neither on the demo path.
+
+## Phase 5 — Detection & Evaluation QA (release gate)
+
+Full detail: `evidence/day-9/phase-5-detection-eval.md` · `phase-5-diff_d6.txt` ·
+`phase-5-live-detection-harness.py` / `phase-5-live-detection-results.json`.
+
+| Suite / check | Command | Result | Notes |
+|---|---|---|---|
+| **DEF-D9-003 reconciliation** (corpus SHA drift) | `eval.harness` ×2 → `diff_d6.py` | ✅ **RECONCILED** | harness deterministic (A≡B); plan's exact `diff_d6` invocation → **2 changed leaves, both provenance metadata** (`corpus_db_sha256` = the drift, `generation_command` = invocation echo); `--ignore provenance` → **0 substantive difference(s)**; `report.md` byte-identical mod provenance. `d6.json` SHA `29edcb22…` + `models/audit.json` `ce75cb7f…` **unchanged from Phase 0**. **S-6 NOT triggered.** |
+| Detection + eval acceptance subset | `pytest tests/ -q -k "<subset>"` | ⚠️ **196 passed / 1 failed** | the 1 = `test_d6_provenance::test_corpus_identity` (DEF-D9-003, P2 known limitation — byte-hash check on a non-deterministically-built gitignored input; zero metric impact). CUSUM/SPRT/calibration/hysteresis/K_max/control-arm/state-machine/entity-resolution/corroboration/metamorphic M1–M8 all ✅ |
+| Detection — live (`easy` seed42 speed60 pace episode, real `score_attempt`) | `phase-5-live-detection-harness.py` | ✅ **8 / 8** substantive checks | 821/821 events; decision histogram `{allow:269, challenge:552}` — **0 auto block/step_up** (ceiling holds); R1/R2/R3 floors all fire; 2 `drift` incidents ESCALATED, TTD 76/78 s; entity type `ip` only; `k_max:10 advisory:false`; control arm 29/821; state machine ESCALATED→CLOSED on resolve, all enforcement released; `reset` 200 + `cleared`. |
+| Evaluation — D6 reproduction | `eval.harness --split all --seed 42` + `diff_d6.py` | ✅ **0 substantive metric differences** | schema v2, provenance complete; per-tier (incl `tier_e`) matches README (model 0.00/0.973/0.732/0.391, B0 0.997/0.985/0.125/0.284); prevalence transform π₀/π₁/π_t; ECE π₀ 0.262→0.0007 w/ prior corr; cost `c_fn=5200 c_fp=1800` rupee_gap 0 structural, saving 23214508; `theta_challenge=0.257`; B0 ROC-AUC 0.994 > model 0.889; 7 negative controls; 6 features excluded → 4 live; every metric carries its measurement conditions; `unreachable`/`resolvable:false` never a fake `0.000`. |
+
+**Phase 5 verdict: GREEN — release gate PASSES.** No new defects. DEF-D9-003
+remains OPEN as a P2 documented known limitation (does not block the gate; the
+gate's requirement — "0 substantive differences, `d6.json` SHA unchanged" — is met).
