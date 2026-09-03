@@ -136,10 +136,10 @@ undermine the demo when the presenter follows `DAY-9-DEMO-SCRIPT.md`.
 
 | | |
 |---|---|
-| **Final HEAD** | _(recorded after the Phase-15 commit sweep — see the last line of this file)_ |
+| **Final HEAD** | `60b5b4d` (this pin commit sets the true final HEAD one commit later) |
 | **Working tree** | clean |
-| **Session 3 commits** (in order) | `055613e` DEF-D9-010 · `6edc909` DEF-D9-011 (Dockerfile, superseded) · `afaf572` DEF-D9-011 (corrected) · `49a06cf` pin sha · `5318701` Phase 12 Rehearsal #1 · `87614da` DEF-D9-008 · `eb13ffa` DEF-D9-006 · `3e2b6dc` Decision 110 · `87f3962` DEF-D9-012 · `4abb711` Phase 13 dispositions · `bbd9be2` DAY-9-DEMO-SCRIPT.md · `d084ee2` Phase 14 Rehearsal #2 · `<phase15>` Phase 15 audit + results + Flow.md + checkpoint |
+| **Session 3 commits** (in order) | `055613e` DEF-D9-010 · `6edc909` DEF-D9-011 (Dockerfile, superseded) · `afaf572` DEF-D9-011 (corrected) · `49a06cf` pin sha · `5318701` Phase 12 Rehearsal #1 · `87614da` DEF-D9-008 · `eb13ffa` DEF-D9-006 · `3e2b6dc` Decision 110 · `87f3962` DEF-D9-012 · `4abb711` Phase 13 dispositions · `bbd9be2` DAY-9-DEMO-SCRIPT.md · `d084ee2` Phase 14 Rehearsal #2 · `60b5b4d` Phase 15 audit + results + Flow.md + checkpoint / `<pin>` pin HEAD |
 | **S-6 frozen artifacts** | all 4 SHAs byte-identical to Phase 0 |
 | **Unexpected generated files** | none (repo-root `test-results/` from a Playwright run is now gitignored) |
 
-> **FINAL HEAD after the Phase-15 commit: recorded below by the checkpoint commit itself.**
+> **FINAL HEAD:** run `git log --oneline -1` on `day-9` — the checkpoint pin commit immediately follows `60b5b4d`.
