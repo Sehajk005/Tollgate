@@ -266,3 +266,24 @@ reset → `idle` + full `cleared` map).
 
 **Phase 7 verdict: GREEN.** No new defects. Two hardening observations (InMemory
 fallback logs a full traceback; spool grows unbounded — `down -v` resets it).
+
+## Phase 8 — Replay Lifecycle (release gate)
+
+Full detail: `evidence/day-9/phase-8-replay-lifecycle.md` · harness + results:
+`phase-8-replay-harness.py` / `phase-8-replay-results.json` / `phase-8-replay-console.log`.
+**19 launches, 19 distinct `run_id`s.**
+
+| Section | Command | Result | Notes |
+|---|---|---|---|
+| A. speed-0 matrix — `{easy,medium,hard,evasive}` × pace{on,off} × 2 | `phase-8-replay-harness.py` | ✅ **16/16** | **easy=821**, medium=701, hard=508, evasive=390 — exact, repeatable (both reps identical), count-invariant under pace on/off. Every run `finished` / `sent==total` / `terminal` (never N−1/N, AUDIT-002). `attempt_score` Δ == `sent` every run (AUDIT-005). `reset` → 200 + `cleared` + `degraded:false`. Redis **db 0** `dbsize` → **0** after reset (floor respected). |
+| B. speed-60 (demo path) | harness | ✅ **3/3** | easy/pace `finished 821/821` wall 126 s; easy/nopace 183 s (~3 min, matches README); medium/pace `finished 701/701` wall 125 s, 13 incidents |
+| C. lifecycle ops | harness | ✅ **5/5** | C1 stop mid-run → `stopped` sent 110 (true terminal, AUDIT-003); C2 reset-while-running → 200 `idle` (AUDIT-004); C2b backend actually stopped (attempt_score frozen); C3 repeat run → both 821/821, distinct run_ids, `auto_reset:true` (AUDIT-005); C4 tier switch and back → 3 distinct run_ids |
+| D. speed-1 (paced proof) | harness | ⚠️ | pacing works (1/821 after 20 s, not racing), launch 202, `reset` recovers. `stop` → `stopping` and stays there until the paced sleep ends → **DEF-D9-007 (P3)**. Not a demo speed (full run ≈ real-time hours). |
+| refresh during/after · dashboard mid/post-replay | → Phase 11 | — | backend back-fill contract verified Phase 7 Fault 4 |
+
+**Phase 8 verdict: GREEN — the repeatability gate PASSES.** The complete demo is
+repeatable. Two P3 defects: **DEF-D9-007** (stop lags at speed 1 — not the demo
+speed) and **DEF-D9-008** (`reset` closes incidents but does not release their
+persisted `enforcement_action` rows — demo unaffected because the current run's
+enforcement sorts first). Both one-line Phase-13 fixes. AUDIT-017 fix verified at
+source (tile reads a server field, not the 200-cap buffer).
