@@ -1116,3 +1116,63 @@ narrator tests' post-import monkeypatching keep working). `validate_startup()` t
 non-`gemini` backend, unknown backend, disabled flag) -- the key value is never logged.
 `deps.py` / `routes_outcome.py` / `template.py` keep their direct `os.environ` reads; the
 `.env` load populates `os.environ` so they see the same values.
+
+## 18. [Day 9] `docker compose up`, J6 steps 6-8, and the QA/rehearsal pass
+
+Source: `09-DAY-9-QA-AND-DEMO-PLAN.md`. Day 9 built two things the v2 spec required but the
+repo lacked, then ran an eleven-phase QA pass + two demo rehearsals to a **DEMO READY**
+verdict (`QA-AUDIT-DAY-9-2026-09-03.md` §23).
+
+### 18.1 The containerized deployment path (Decision 109)
+
+`docker compose up --build` brings up `redis`, `redis-small`, a one-shot `bootstrap`,
+`scorer`, `storefront`, `dashboard` -- healthchecks + `depends_on` order: `redis` healthy
+-> `bootstrap` (`scripts/compose_bootstrap.py`: `seed_merchant` -> `learn_store_baseline`
+-> `tune_cusum`, idempotent, footgun-safe) exits 0 -> `scorer` healthy -> the two Vite
+frontends. The repo is bind-mounted into every container; `models/`, `config/`,
+`data/corpus/` stay host-side; the **mutable** demo DB + spool live on the Linux-native
+`tollgate_data` volume (SQLite WAL `-shm` cannot mmap over a Windows bind mount).
+`bootstrap` writes `deploy/compose.env` (gitignored) with the merchant key +
+`TOLLGATE_OUTCOME_SECRET` + `TG_CONFIG_HASH`. **DEF-D9-011:** Compose resolves `env_file:`
+at container-create time, before `bootstrap` runs -- so the `scorer` Dockerfile CMD and the
+two frontends' `docker-compose.yml` `command:` both `. /repo/deploy/compose.env` at
+container start (`set -a; [ -f … ] && . …; set +a; exec …`), and the frontend value must
+live in the compose `command:` because that overrides the image `CMD`. Additive env seams,
+all byte-identical off-Docker: `TOLLGATE_SCORER_URL` (Vite `/v1` proxy target),
+`TOLLGATE_TRUSTED_EDGE_HOSTS` (added to the built-in loopback set -- the two Vite proxy
+container IPs), `TOLLGATE_DB_PATH` / `TOLLGATE_SPOOL_DIR`.
+
+### 18.2 J6 steps 6-8 -- the demo controls (all gated behind `TOLLGATE_DEMO_CONTROLS=1`)
+
+`services/scorer/routes_demo.py` (`_require_demo()` -> 404 before auth when the env gate is
+off; all routes key-required):
+
+- **Step 6 -- CGNAT co-tenant.** `GET /v1/demo/cotenant-ip` returns one IP from the live
+  enforcement ledger (skipping loopback/RFC1918), or 404 when nothing is enforced. The
+  storefront `?demo=1` "Checkout as CGNAT co-tenant" button GETs that IP then re-runs
+  `pay({ "x-tg-demo-xff": ip })`; `storefront/vite.config.js` promotes `x-tg-demo-xff` ->
+  `X-Forwarded-For`, honoured because the proxy container is in
+  `TOLLGATE_TRUSTED_EDGE_HOSTS`. The customer hits the real `(ip, ua_class)` entity and the
+  real `challenge` auto-ceiling -- a single clean attempt resolves to `allow`, never
+  `block`. Nothing special-cased.
+- **Step 7 -- flood.** `POST /v1/demo/flood {enabled:true}` starts `DemoFloodRunner`
+  (`services/scorer/demo.py`) -- 250 real concurrent `POST /v1/score` at the scorer's own
+  port, draining the per-merchant token bucket through the genuine
+  `AdmissionController.try_consume` -> shed path. Never a flag that sets `shed`.
+  **DEF-D9-004 (P3, documented):** on the single-worker dev scorer (~79 req/s vs the 50/s
+  bucket refill) the flood sheds ~1/3 of its own requests but not continuously, so an
+  interactive checkout is shed only intermittently and the D0 banner may not latch.
+- **Step 8 -- fault injector.** `POST /v1/demo/fault {enabled:true}` sets `state.demo_fault`;
+  `routes_score.py` then raises before `score_attempt()` (only when the flag AND the env
+  gate are both set) -> the existing `_fail_open` path -> `200 allow`,
+  `degraded_reason: fail_open:model`, `alert` once per clock window, never a 5xx.
+
+### 18.3 QA outcome
+
+12 defects (DEF-D9-001..012). Two P1 -- **DEF-D9-010** (storefront `onClick={pay}` leaked
+the React event into the `/v1/score` fetch headers -> false "Order confirmed"; fixed
+`onClick={() => pay()}`) and **DEF-D9-011** (above) -- both fixed, regression-guarded, and
+verified in a second clean-state rehearsal. `verify_60x --gate throughput`'s `throughput_ok`
+speed sub-check is advisory on the reference machine (Decision 110; `/v1/score` compute
+p99 = 12 ms). Every frozen eval artifact SHA is byte-identical to Phase 0. See
+`DAY-9-DEFECT-LOG.md`, `DAY-9-DEMO-SCRIPT.md`, `QA-AUDIT-DAY-9-2026-09-03.md`.

@@ -43,9 +43,12 @@ dist/
 # resolving an ESM config; it is never source.
 *.timestamp-*.mjs
 # Day 9: Playwright regenerates these on every run -- HTML report + trace/video
-# bundles. The classified results live in DAY-9-TEST-RESULTS.md + evidence/.
+# bundles + the .last-run.json marker (a repo-root test-results/ appears when the
+# suite is run from the repo root). The classified results live in
+# DAY-9-TEST-RESULTS.md + evidence/.
 services/dashboard/playwright-report/
 services/dashboard/blob-report/
+test-results/
 
 # Environment / secrets
 .env

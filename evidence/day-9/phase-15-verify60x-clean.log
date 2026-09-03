@@ -1,0 +1,44 @@
+### verify_60x re-run on a quiet machine (only redis up), 21:55:35 ###
+=== --gate 60x --faulthandler ===
+
+=== gate: 60x (faulthandler=True) ===
+  PASS  all_runs_finished
+  PASS  exact_terminal_counts
+  PASS  checkout_interleaved
+  PASS  zero_failed_runs
+  PASS  health_responsive
+  PASS  loop_lag_under_2s
+  PASS  rss_growth_ok
+  PASS  no_crash
+  PASS  drainer_alive
+  -> PASS in 401.4s
+
+OVERALL: PASS
+
+=== --gate crossing ===
+
+=== gate: crossing (faulthandler=False) ===
+  -> PASS in 94.4s
+
+OVERALL: PASS
+
+=== --gate throughput ===
+
+=== gate: throughput (faulthandler=False) ===
+  PASS  all_finished
+  PASS  each_under_5s
+  FAIL  throughput_ok
+  PASS  identical_event_counts
+  PASS  no_run_was_swallowed
+  PASS  redis_returns_to_floor
+  PASS  no_degraded_reset
+  PASS  attempt_score_row_parity
+  PASS  drainer_alive
+  PASS  drainer_connects_within_budget
+  PASS  loop_lag_under_2s
+  -> FAIL in 75.7s
+
+OVERALL: FAIL
+### done 22:05:09 ###
+
+[exited with code 0]

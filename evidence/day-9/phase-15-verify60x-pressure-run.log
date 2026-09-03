@@ -1,0 +1,16 @@
+
+=== gate: 60x (faulthandler=False) ===
+  FAIL  all_runs_finished
+  FAIL  exact_terminal_counts
+  FAIL  checkout_interleaved
+  FAIL  zero_failed_runs
+  PASS  health_responsive
+  PASS  loop_lag_under_2s
+  PASS  rss_growth_ok
+  PASS  no_crash
+  PASS  drainer_alive
+  -> FAIL in 66.1s
+
+OVERALL: FAIL
+
+[exited with code 0]
