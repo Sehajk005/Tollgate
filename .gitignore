@@ -51,6 +51,10 @@ services/dashboard/blob-report/
 .env
 .env.*
 !.env.example
+# Day 9 Phase 2: the env_file the Compose stack reads. scripts.compose_bootstrap
+# writes the merchant API key + outcome secret + TG_CONFIG_HASH here. Never
+# commit; deploy/compose.env.example documents the shape.
+deploy/compose.env
 
 # OS / editor
 .DS_Store

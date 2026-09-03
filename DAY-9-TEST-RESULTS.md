@@ -121,4 +121,36 @@ check inside the throughput gate — is green. Proceeding to Phase 2.
 
 ---
 
-_Phases 2–3 gate results appended below as they complete._
+---
+
+## Phase 2 — Containerization exit gate
+
+Full detail: `evidence/day-9/phase-2-containerization.md`.
+
+| Suite / check | Command | Result | Notes |
+|---|---|---|---|
+| `docker compose up --build` from `down -v` | `docker compose down -v && docker compose up --build` | ✅ | exit 0; all 5 long-running services healthy ~43 s after first container start; `bootstrap` exit 0 |
+| Backend full vs **containerized** Redis | `TOLLGATE_REDIS_URL=redis://localhost:6379 uv run pytest tests/ -q` | ❌→⚠️ | **618 passed / 1 failed / 2 xfailed** (484 s). The 1 failure = **DEF-D9-003** — `test_d6_provenance.py::test_corpus_identity_is_recorded_and_matches_the_real_corpus`. |
+| `/healthz`, `:5173`, `:5174`, dashboard `/v1` proxy | curl | ✅ | 200 / 200 / 200 / 200 |
+| SSE + `/v1/stream/recent` | curl `-N` | ✅ | `: ping` heartbeat; `{"events":[]}` fresh |
+| `/v1/incidents` | curl | ✅ | 200 — was **500** (`unable to open database file`) before the `tollgate_data` volume fix |
+| Layer 2 loaded (DB rows + startup log) | `docker compose logs scorer` + DB query | ✅ | `policy_config` v2 w/ thresholds + `store_baseline` row; log line `loaded Layer 2 for merchant_demo: policy v2 …` |
+| Redis connect (not fallback) | startup log | ✅ | `Connected to Redis … using RedisWindowStore` |
+| Narrator template / gemini-no-key warning | replay + `validate_startup()` | ✅ | incidents narrated `narrative_source='template'`; missing-key warning emitted |
+| Replay lifecycle through the stack | `POST /v1/replay/{start,reset}` | ✅ | `finished 821/821`; reset 200 with `cleared` map; Redis `dbsize`→0 |
+| Trusted-edge XFF (Step 6 / PRE-4 enabler) | `X-Forwarded-For` via Vite proxy | ✅ | resolves to the forwarded IP through the declared-edge proxy container; ignored for a non-edge peer |
+| S-6 artifacts (`d6.json`, `models/audit.json`, `l1-lgbm-v1.json`, `platt-v1.json`) SHA | `sha256sum` | ✅ | **unchanged** from Phase 0 |
+
+### Failure classification (Phase 2)
+
+| Item | Classification | Disposition |
+|---|---|---|
+| `test_d6_provenance::test_corpus_identity_is_recorded_and_matches_the_real_corpus` | **Newly introduced this phase, self-inflicted.** While iterating on the bootstrap, one `docker compose up` ran `learn_store_baseline` + `tune_cusum` against the bind-mounted `data/corpus/tollgate.db` before the corpus-working-copy guard existed → `store_baseline.updated_at` (wall-clock, non-deterministic) bumped on 8 rows + 20 `policy_config` rows appended (since deleted). Corpus SHA no longer matches `d6.json.provenance.corpus_db_sha256`. **No metric/detection impact** — 618/619 other tests green; the removed policy rows were unreferenced; `updated_at` is metadata; every S-6 artifact SHA unchanged. | **DEF-D9-003, P2.** Recurrence prevented (`compose_bootstrap.ensure_corpus_working_copy()`). **Phase 5 prerequisite:** regenerate `d6.json` provenance after a reviewed metric diff, or restore/rebuild a pristine corpus. Not restorable in Session 1 (no pristine copy; `updated_at` non-deterministic). |
+
+Stop condition **S-2 not triggered** (phase well under 4 h; no detection/scoring/window
+semantics change). Stop condition **S-6 not triggered** (all four frozen artifact SHAs
+intact).
+
+---
+
+_Phase 3 gate results appended below as they complete._

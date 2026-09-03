@@ -4080,3 +4080,80 @@ None. The statistic, its parameters and its wire representation are unchanged.
 `services/scorer/replay.py` (watchdog). Tests:
 `test_layer2_time_discontinuity.py` (R1/R2/R3), `test_layer2_catchup_bound.py`, and the
 crossing gate in `scripts/verify_60x.py`.
+
+---
+
+## Decision 109: `docker compose up` is the containerized deployment path; the mutable demo DB lives on a Linux volume; the trusted edge is configurable
+
+### Context
+TRD v2 §3 names `docker compose up` as the laptop deployment, but the repo had **no
+Dockerfiles** and `docker-compose.yml` defined only the two Redis services (Day 9
+reconciliation R-1). The README's manual `uv run uvicorn ... + npm run dev` path was the
+only working way to stand the stack up -- which is not a release gate a judge can rely on.
+
+### Decision
+Day 9 Phase 2 builds the real path: `docker compose up --build` brings up `redis`,
+`redis-small`, a one-shot `bootstrap`, `scorer`, `storefront`, `dashboard`, with
+healthchecks and `depends_on` ordering (`redis` healthy -> `bootstrap` completed ->
+`scorer` healthy -> frontends). The repo is bind-mounted into every container for
+dev-parity.
+
+Three configuration seams are introduced, **all additive, all byte-identical off-Docker**:
+
+- **`TOLLGATE_SCORER_URL`** -- both `vite.config.js` files read it for the `/v1` proxy
+  target (unset -> `http://localhost:8080`; Compose -> `http://scorer:8080`). Both Vite
+  servers also run `--host 0.0.0.0`.
+- **`TOLLGATE_TRUSTED_EDGE_HOSTS`** (`services/scorer/net.py`) -- a comma-separated list
+  *added to* the built-in `{127.0.0.1, ::1, testclient}`. Under Compose it is the two Vite
+  proxy containers' static IPs (`172.28.0.11`, `172.28.0.12`). This is Threat Model K8's
+  "X-Forwarded-For hop validated against the merchant's declared edge" -- without it every
+  storefront request collapses to one container IP, and it is also the enabler for J6
+  step 6 (a checkout attributable to an enforced IP). Unset -> the trust boundary is
+  exactly today's.
+- **`TOLLGATE_DB_PATH` / `TOLLGATE_SPOOL_DIR`** (`services/scorer/deps.py::build_default`,
+  `scripts/seed_merchant.py`, `scripts/compose_bootstrap.py`) -- select the demo DB + spool
+  location. Unset, or an explicit argument (the durability/lock test runner) -> unchanged
+  (`tollgate.db` / `spool` relative to CWD).
+
+**The mutable demo DB + spool live on a Linux-native named volume `tollgate_data`, not the
+bind mount.** SQLite in WAL mode cannot mmap its `-shm` file over Docker Desktop's Windows
+bind-mount filesystem, so a fresh read/write connection fails with `unable to open database
+file` (`GET /v1/incidents` -> 500 was the symptom). The volume fixes it with **no
+journal-mode or storage-semantics change** -- every backend test that pins WAL
+(`test_drainer_lifecycle.py`) operates on its own tmp DB and is unaffected. `data/corpus/`
+(the 18 MB read-only reference corpus) **stays bind-mounted**; the `bootstrap` copies it to
+the volume before `learn_store_baseline` / `tune_cusum` so the reference file is never
+written.
+
+Secrets (`VITE_TOLLGATE_API_KEY`, `TOLLGATE_OUTCOME_SECRET`) and `TG_CONFIG_HASH` flow
+through `deploy/compose.env` (gitignored; `deploy/compose.env.example` documents it). The
+one-shot `bootstrap` (`scripts/compose_bootstrap.py`) writes it: a fresh DB is seeded and
+the new key/secret written; an existing merchant reuses a key that hashes to
+`merchant.api_key_hash`, or **fails loudly** -- the `INSERT OR IGNORE` dead-key footgun is
+never triggered. `tune_cusum` is skipped once `policy_config.thresholds` is populated, so
+repeated `up` does not sprawl policy versions.
+
+### Alternatives considered
+Flipping the demo DB to `journal_mode=DELETE` so the bind mount works -- rejected: it
+mutates the host DB's journal mode as a side effect of running Compose, and Docker
+Desktop's Windows `fcntl` advisory locking is itself unreliable. A self-contained image
+that bakes in `models/` + the corpus -- rejected: the corpus is 18 MB and un-rebuildable
+without a LightGBM retrain (the plan's own rationale). `env_file` alone for the
+bootstrap-issued secret -- insufficient: Compose resolves `env_file` before `bootstrap`
+runs, so the scorer entrypoint also sources `deploy/compose.env` at start.
+
+### Specification impact
+TRD v2 §3's `docker compose up` is now real. No detection, scoring, window, or enforcement
+semantics change. `01-THREAT-MODEL-v2.md` K8's "declared edge" is now configurable rather
+than a hard-coded loopback set -- a spec-alignment, not a widening (default unchanged).
+
+### Implementation impact
+New: `docker-compose.yml` (rewritten), `services/{scorer,dashboard,storefront}/Dockerfile`,
+`scripts/compose_bootstrap.py`, `deploy/compose.env.example`, `deploy/uvicorn-logging.json`,
+`.dockerignore`. Changed (additive): `services/scorer/net.py`, `services/scorer/deps.py`,
+`scripts/seed_merchant.py`, `services/{dashboard,storefront}/vite.config.js`,
+`services/scorer/Dockerfile` CMD (`--log-config` for DEF-D9-002), `.gitignore`. Known
+follow-up: **DEF-D9-003** -- an early bootstrap iteration drifted `data/corpus/tollgate.db`
+(`store_baseline.updated_at` + free pages) before the corpus-working-copy guard existed;
+`test_d6_provenance::test_corpus_identity` fails on the SHA; no metric impact; Phase 5
+reconciles.

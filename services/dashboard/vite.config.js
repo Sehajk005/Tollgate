@@ -12,6 +12,13 @@ import react from "@vitejs/plugin-react";
 // page renders "freshness not verifiable in this build" -- never a false
 // "current".
 function currentConfigHash() {
+  // Day 9 Plan Phase 2 ("D6 freshness under Docker"): a node image has no
+  // Python, so the shell-out below returns null and D6 would silently degrade
+  // to "freshness not verifiable". The Compose `bootstrap` service computes the
+  // same eval.provenance.config_hash() and passes it as TG_CONFIG_HASH; honour
+  // it first. The manual path (no TG_CONFIG_HASH) is unchanged.
+  const injected = (process.env.TG_CONFIG_HASH || "").trim();
+  if (/^[0-9a-f]{64}$/.test(injected)) return injected;
   try {
     const out = execFileSync(
       "python",
@@ -42,7 +49,9 @@ export default defineConfig({
     fs: { allow: ["..", "../.."] },
     proxy: {
       "/v1": {
-        target: "http://localhost:8080",
+        // Day 9 Plan Phase 2: parameterized. Unset (README manual path) stays
+        // byte-identical; Compose sets TOLLGATE_SCORER_URL=http://scorer:8080.
+        target: process.env.TOLLGATE_SCORER_URL || "http://localhost:8080",
         changeOrigin: true,
       },
     },

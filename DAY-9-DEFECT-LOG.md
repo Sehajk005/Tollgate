@@ -10,7 +10,8 @@ reproduces** (Plan §8, §9). A patch alone is not "fixed".
 | ID | Sev | Phase found | Component | One-line | Status |
 |---|---|---|---|---|---|
 | DEF-D9-001 | P2 | 1 | `scripts/verify_60x.py` throughput gate / scorer serving path | `verify_60x --gate throughput` speed sub-checks fail: mean 190 attempts/s (target ≥ 400), 5/20 runs > 5 s | OPEN — quantify in Phase 10 |
-| DEF-D9-002 | P3 | 1 | `services/scorer/app.py` logging config | README manual-path startup does not surface `tollgate.scorer` INFO lines (Redis / model / Layer-2 status) — only `uvicorn*` loggers are configured by `--log-level` | OPEN — address in Phase 2 (Compose gate needs the Layer-2 line) / Phase 11 |
+| DEF-D9-002 | P3 | 1 | `services/scorer/app.py` logging config | README manual-path startup does not surface `tollgate.scorer` INFO lines (Redis / model / Layer-2 status) — only `uvicorn*` loggers are configured by `--log-level` | **FIXED (Phase 2)** — Compose scorer runs uvicorn with `--log-config deploy/uvicorn-logging.json`; the Layer-2 line is visible in the container log. Manual path unchanged (still applies there — reopen as P3 if manual-path observability is required). |
+| DEF-D9-003 | P2 | 2 | `data/corpus/tollgate.db` (reference corpus) | Phase-2 bootstrap (before the corpus-working-copy guard) ran `learn_store_baseline` + `tune_cusum` against the bind-mounted reference corpus, bumping `store_baseline.updated_at` on 8 rows + appending 20 `policy_config` rows (since deleted). Corpus SHA no longer matches `eval/outputs/d6.json.provenance.corpus_db_sha256` → `test_d6_provenance::test_corpus_identity_is_recorded_and_matches_the_real_corpus` FAILS. | OPEN — **Phase 5 prerequisite** (regenerate `d6.json` provenance, or restore a pristine corpus). Recurrence prevented: bootstrap now copies the corpus to the volume first. |
 
 ---
 
@@ -48,6 +49,26 @@ reproduces** (Plan §8, §9). A patch alone is not "fixed".
 | **Root cause** | No root/app logging configuration; the app relies on Uvicorn's logging setup, which is scoped to `uvicorn`, `uvicorn.error`, `uvicorn.access`. |
 | **Evidence** | `evidence/day-9/phase-1/scorer-startup.log` (README path — lines absent) vs `scorer-startup-info.log` (wrapper — lines present). |
 | **Demo impact** | Cosmetic. But the **Phase 2 Compose exit gate** requires the Layer-2 line to be visible in the scorer startup log ("verified via … the scorer startup log, not merely 'it started'"), so this must be fixed as part of Phase 2's scorer entrypoint. |
-| **Fix status** | Not attempted. Candidate fix: a minimal `logging.basicConfig`/`dictConfig` in `create_app`'s module or the container entrypoint that adds a stream handler for `tollgate*` at INFO, without disturbing test log capture. |
-| **Verification method (when actioned)** | Start the scorer by the documented path; assert the Redis, model, and Layer-2 lines appear on stderr. |
-| **Residual risk** | Negligible. |
+| **Fix status** | **FIXED in Phase 2.** `deploy/uvicorn-logging.json` (a dictConfig based on uvicorn's default + a `tollgate` logger at INFO); the scorer Dockerfile CMD passes `--log-config deploy/uvicorn-logging.json`. Verified: `docker compose logs scorer` shows `Connected to Redis …`, `loaded Layer-1 model …`, `loaded Layer 2 for merchant_demo: policy v2, cusum_h=318.133 …`. |
+| **Verification method** | `docker compose up` → `docker compose logs scorer \| grep "loaded Layer 2"` returns the line. ✓ |
+| **Residual risk** | The README **manual** path (`uv run uvicorn … --log-level info`) still does not surface these lines — it does not pass `--log-config`. Cosmetic; reopen as P3 if manual-path observability is later required. |
+
+---
+
+## DEF-D9-003 — Phase-2 bootstrap drifted the reference corpus
+
+| Field | Detail |
+|---|---|
+| **Severity** | P2 |
+| **Category** | Data-artifact integrity (provenance) — self-inflicted during Phase 2 |
+| **Phase found** | 2 (full `pytest tests/ -q` against the containerized Redis) |
+| **Component** | `data/corpus/tollgate.db` (gitignored 18 MB negative-control reference corpus) |
+| **Repro** | `uv run pytest tests/acceptance/test_d6_provenance.py::test_corpus_identity_is_recorded_and_matches_the_real_corpus` |
+| **Expected** | `sha256(data/corpus/tollgate.db) == eval/outputs/d6.json["provenance"]["corpus_db_sha256"]` (`7f6ef6dd…`). Passed at the Phase-1 baseline. |
+| **Actual** | Current corpus SHA `9e1e3346…` ≠ recorded `7f6ef6dd…`. `1 failed, 618 passed, 2 xfailed`. |
+| **Root cause (established)** | While iterating on Phase 2, one `docker compose up` ran the `bootstrap` service **before** the corpus-working-copy guard existed. `scripts/learn_store_baseline --db data/corpus/tollgate.db` re-upserted 8 `store_baseline` rows with a fresh `updated_at = SystemClock().now_ms()` (`learn_store_baseline.py:222`, `updated_at` is wall-clock, non-deterministic), and `scripts/tune_cusum --db data/corpus/tollgate.db` appended 20 `policy_config` rows (versions 9 / 5). The 20 policy rows were then deleted (restoring `MAX(version)` to 8 / 4), but the `updated_at` bump and the DELETE's free pages remain — the file no longer hashes to `7f6ef6dd…`. |
+| **Functional impact** | **None.** 618/619 pre-existing tests still pass; only this SHA-equality provenance check notices. `store_baseline.updated_at` is metadata read by no detector or metric; the removed `policy_config` v9 rows were never referenced (the eval pins `policy_version: 1`). Every S-6 artifact (`eval/outputs/d6.json`, `models/audit.json`, `models/l1-lgbm-v1.json`, `models/platt-v1.json`) SHA is **unchanged** from Phase 0. |
+| **Evidence** | `evidence/day-9/phase-2-pytest.log`; the timestamp analysis (all 8 `store_baseline.updated_at == 1788419860256`, the 20 policy rows all `created_at == 1788419869235`). |
+| **Fix status** | **Recurrence prevented** — `scripts/compose_bootstrap.py::ensure_corpus_working_copy()` now `shutil.copy2`s the corpus to `/data/corpus.db` on the volume and runs learn/tune against that copy; `data/corpus/tollgate.db` is never written under Compose (verified: `SELECT COUNT(*),MAX(version) FROM policy_config` = `(156, 8)` before and after a clean `down -v && up`). **The drift itself is NOT restored** — no pristine copy exists (corpus is gitignored, never tracked; `updated_at` is non-deterministic). |
+| **Remediation (Phase 5, later session)** | Phase 5 re-derives `d6.json` via `eval.harness` to a scratch dir and `diff_d6.py`s it. Either (a) accept the regenerated provenance (records the current corpus SHA) after a reviewed diff shows 0 substantive metric differences, or (b) rebuild a pristine corpus (`eval.corpus.replay_corpus` — deterministic on seed 42 — then `learn_store_baseline` + `tune_cusum`) and regenerate `d6.json` against it. **Hard prerequisite for the Phase 5 gate.** |
+| **Residual risk** | Low. The corpus is self-consistent and its attack/negative data (seed-42 deterministic) is untouched; only baseline metadata drifted. A metric-level diff in Phase 5 will confirm zero substantive change. |

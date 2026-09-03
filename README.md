@@ -129,6 +129,32 @@ instead of silently falling back.
 
 ## Running the demo
 
+### Docker Compose (Day 9 -- the one-command path)
+
+```
+docker compose up --build          # storefront :5173 - dashboard :5174 - scorer :8080
+```
+
+Brings up `redis`, `redis-small`, a one-shot `bootstrap`, `scorer`, `storefront` and
+`dashboard`, in dependency order, with healthchecks. The `bootstrap` service runs
+`seed_merchant` -> `learn_store_baseline` -> `tune_cusum` idempotently and writes the demo
+API key / outcome secret / D6 config hash to `deploy/compose.env` (gitignored;
+`deploy/compose.env.example` documents the shape). It is footgun-safe: with an existing
+`merchant` row it reuses a key that hashes to the stored one, or fails loudly -- it never
+prints a dead key.
+
+The repo is bind-mounted into every container (dev-parity). `models/`, `config/` and the
+18 MB `data/corpus/` reference DB stay host-side. The **mutable** demo DB + spool live on
+the `tollgate_data` named volume -- SQLite's WAL `-shm` file cannot be mmap'd over a Docker
+Desktop Windows bind mount. `docker compose down -v` wipes it for a true clean start.
+
+Config seams (all default to the manual-path behaviour when unset): `TOLLGATE_SCORER_URL`
+(Vite `/v1` proxy target), `TOLLGATE_TRUSTED_EDGE_HOSTS` (added to the built-in
+loopback set -- the Compose stack lists the two Vite proxy containers), `TOLLGATE_DB_PATH`
+/ `TOLLGATE_SPOOL_DIR`.
+
+### Manual path (unchanged)
+
 ```
 uv sync --extra dev
 docker compose up -d redis                     # Day 3: the WindowStore backend

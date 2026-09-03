@@ -10,6 +10,7 @@ config/rules.yaml.
 from __future__ import annotations
 
 import json
+import os
 import secrets
 from pathlib import Path
 
@@ -19,7 +20,9 @@ from packages.clock.clock import SystemClock
 from packages.storage.db import connect, initialize_schema
 from services.scorer.auth import hash_api_key
 
-DB_PATH = Path("tollgate.db")
+# Day 9 Plan Phase 2: the Compose bootstrap points this at the demo DB on a
+# Linux-native volume (TOLLGATE_DB_PATH). Unset -> "tollgate.db", as before.
+DB_PATH = Path(os.environ.get("TOLLGATE_DB_PATH", "tollgate.db"))
 SCHEMA_PATH = Path("schema.sql")
 RULES_CONFIG_PATH = Path("config/rules.yaml")
 MERCHANT_ID = "merchant_demo"
