@@ -353,15 +353,25 @@ class ReplayDriver:
         return cleared
 
     def _close_open_incident_rows(self) -> int:
-        from packages.storage.repository import read_open_incidents, resolve_incident
+        from packages.storage.repository import (
+            read_open_incidents,
+            release_enforcement_for_incident,
+            resolve_incident,
+        )
 
         conn = connect(self._state.db_path)
         try:
             rows = read_open_incidents(conn, self._merchant_id)
             for row in rows:
+                now = _now_ms()
+                # DEF-D9-008: match the operator resolve route
+                # (routes_incidents.py) -- close the incident AND release its
+                # enforcement rows. Closing alone left enforcement_action rows
+                # with released_at IS NULL after every run+reset cycle.
+                release_enforcement_for_incident(conn, row["incident_id"], now)
                 resolve_incident(
                     conn, row["incident_id"], resolution="reset",
-                    resolved_by="reset", closed_at=_now_ms(),
+                    resolved_by="reset", closed_at=now,
                 )
             return len(rows)
         finally:
