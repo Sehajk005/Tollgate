@@ -17,7 +17,15 @@ from typing import Optional
 
 import redis as redis_lib
 
-from packages.features.keys import window_key
+from packages.features.keys import (
+    card24_key,
+    cusum_key,
+    eidr_key,
+    idem_key,
+    merchant_prefix,
+    shed_key,
+    window_key,
+)
 from packages.features.store import (
     ScorePathRequest,
     ScorePathSnapshot,
@@ -113,22 +121,71 @@ class RedisWindowStore:
         `now_ms` is unused here -- Redis applies the TTL against its own
         clock; the in-memory backend needs it because it has none.
         """
-        key = f"tg:{merchant_id}:shed:{ip}"
+        key = shed_key(merchant_id, ip)
         count = int(self._client.incr(key))
         if count == 1:
             self._client.pexpire(key, ttl_ms)
         return count
 
+    def clear(self, merchant_id: Optional[str] = None) -> int:
+        """
+        Source: remediation plan FIX-003 / §10 (AUDIT-001).
+
+        `ReplayDriver.reset()` called `window_store.clear()` from Day 2, but the
+        method existed only on the in-memory backend -- so in the DOCUMENTED
+        Redis configuration reset raised `AttributeError` on its first line and
+        took the other five clears down with it, returning HTTP 500. Reset was
+        the single most-used control in the demo and it had never worked.
+
+        Scoped `SCAN` + `UNLINK`, **never `FLUSHDB`**: this store shares a
+        logical DB with whatever else the operator keeps there, and destroying a
+        stranger's keys to reset a demo is not an acceptable trade.
+        `MERCHANT_SCOPED_KEY_RE` plus the shared builders in `keys.py` are what
+        make the prefix scan provably complete -- every key either backend
+        writes starts with `tg:{merchant}:`.
+
+        Runs on the HEALTH client, not the score-path client, so
+        `test_one_round_trip.py`'s one-command-per-score assertion is untouched.
+        """
+        pattern = f"{merchant_prefix(merchant_id)}*" if merchant_id else "tg:*"
+        client = self._health_client
+        removed = 0
+        batch: list = []
+        cursor = 0
+        while True:
+            cursor, keys = client.scan(cursor=cursor, match=pattern, count=500)
+            batch.extend(keys)
+            if len(batch) >= 500:
+                removed += self._unlink(client, batch)
+                batch = []
+            if cursor == 0:
+                break
+        if batch:
+            removed += self._unlink(client, batch)
+        return removed
+
+    @staticmethod
+    def _unlink(client, keys: list) -> int:
+        """UNLINK (non-blocking reclaim) with a DEL fallback for servers that do
+        not implement it. Returns the number of keys actually removed."""
+        if not keys:
+            return 0
+        try:
+            return int(client.unlink(*keys))
+        except redis_lib.exceptions.ResponseError:
+            return int(client.delete(*keys))
+
     def score_path(self, request: ScorePathRequest) -> ScorePathSnapshot:
-        idem_key = f"tg:{request.merchant_id}:idem:{request.idem_digest}"
-        eidr_key = f"tg:{request.merchant_id}:eidr:{request.event_id}"
-        card24_key = f"tg:{request.merchant_id}:card24:{request.card_hash}"
-        cusum_key = f"tg:{request.merchant_id}:cusum"
-        window_keys = [
-            window_key(win.merchant_id, win.space, win.key, win.metric, win.window_ms)
-            for win in request.windows
+        keys = [
+            idem_key(request.merchant_id, request.idem_digest, request.idem_namespace),
+            eidr_key(request.merchant_id, request.event_id),
+            card24_key(request.merchant_id, request.card_hash),
+            cusum_key(request.merchant_id),
+            *[
+                window_key(win.merchant_id, win.space, win.key, win.metric, win.window_ms)
+                for win in request.windows
+            ],
         ]
-        keys = [idem_key, eidr_key, card24_key, cusum_key, *window_keys]
 
         argv = [
             request.ingest_ms,

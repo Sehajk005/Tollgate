@@ -3,22 +3,35 @@ import { TIER_TOKENS } from "../lib/labels.js";
 
 // Day 8, Step 3 -- the Stream Rail (UIUX v2 SS5). A 28px band directly under
 // the nav, on EVERY dashboard screen, rendering the live authorisation stream
-// as one 2px tick per scored attempt, scrolling right to left, coloured by
+// as one tick per scored attempt, scrolling right to left, coloured by
 // decision tier.
 //
 // Two degraded marks (UIUX v2 SS5.1) -- an unscored attempt must never render
 // as a confident tier:
-//   fully scored -> solid 2px tick, tier-coloured
-//   shed         -> HOLLOW tick: 2px outline in --tg-text-mute, no fill
-//   fail_open    -> a GAP: 2px of --tg-canvas + a 1px --tg-system-edge stub
+//   fully scored -> solid tick, tier-coloured
+//   shed         -> HOLLOW tick: outline in --tg-text-mute, no fill
+//   fail_open    -> a GAP: --tg-canvas + a 1px --tg-system-edge stub
 //
 // Under `prefers-reduced-motion: reduce` it renders a STATIC snapshot and
 // never schedules a frame (UIUX v2 SS7). Pinned by
 // tests/acceptance/test_ui_reduced_motion.py.
+//
+// Remediation plan FIX-017 (AUDIT-016) -- SIZING. `canvas.width` was set once,
+// in an effect with an empty dependency array, from whatever `clientWidth`
+// happened to be at first paint; the pitch was a fixed 2px tick + 2px gap. So
+// the 200-event buffer could only ever cover 800 CSS pixels: on a 1536px
+// viewport the rail was 52% empty, and a resize stretched the bitmap instead of
+// repainting it. Three changes:
+//
+//   * a ResizeObserver repaints on every size change, in both motion modes;
+//   * the backing store is scaled by devicePixelRatio, so ticks are crisp on a
+//     HiDPI display instead of interpolated;
+//   * the pitch is derived from the width, so the buffer spans the canvas at
+//     any viewport.
 
 const RAIL_HEIGHT = 28;
 const TICK_W = 2;
-const GAP = 2;
+const MIN_PITCH = 3;
 const SPEED_PX_PER_MS = 0.03; // right-to-left drift
 
 function cssVar(name, fallback) {
@@ -35,13 +48,21 @@ function markFor(evt) {
   return { kind: "solid", token };
 }
 
+// FIX-017: the buffer must span the canvas. `pitch` is the centre-to-centre
+// distance between ticks, floored at MIN_PITCH so a tick is never sub-pixel.
+export function tickPitch(width, count) {
+  if (!count || count <= 0) return MIN_PITCH;
+  return Math.max(MIN_PITCH, width / count);
+}
+
 function paint(ctx, width, events, offset) {
   ctx.clearRect(0, 0, width, RAIL_HEIGHT);
   const edge = cssVar("--tg-system-edge", "#38424F");
   const mute = cssVar("--tg-text-mute", "#6E7885");
+  const pitch = tickPitch(width, events.length);
   // newest on the right, marching left
   for (let i = 0; i < events.length; i += 1) {
-    const x = width - offset - i * (TICK_W + GAP);
+    const x = width - offset - i * pitch;
     if (x < -TICK_W) break;
     const m = markFor(events[i]);
     if (m.kind === "gap") {
@@ -62,36 +83,63 @@ export default function StreamRail({ events = [] }) {
   const canvasRef = useRef(null);
   const rafRef = useRef(null);
   const startRef = useRef(null);
+  const widthRef = useRef(0);
   const eventsRef = useRef(events);
   eventsRef.current = events;
+
+  // Size the backing store to the CSS box x devicePixelRatio and scale the
+  // context to match, so one canvas unit is one CSS pixel at any DPR.
+  function resize(canvas) {
+    const dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+    const width = Math.max(1, Math.round(canvas.clientWidth || 800));
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(RAIL_HEIGHT * dpr);
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    widthRef.current = width;
+    return ctx;
+  }
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return undefined;
-    const ctx = canvas.getContext("2d");
-    const width = canvas.clientWidth || 800;
-    canvas.width = width;
-    canvas.height = RAIL_HEIGHT;
 
     const reduce =
       typeof window !== "undefined" &&
       window.matchMedia &&
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+    let ctx = resize(canvas);
+
+    // Repaint on every size change, in BOTH motion modes -- a resize that only
+    // stretches the bitmap is exactly the defect being fixed.
+    let observer = null;
+    if (typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver(() => {
+        ctx = resize(canvas);
+        if (reduce) paint(ctx, widthRef.current, eventsRef.current, 0);
+      });
+      observer.observe(canvas);
+    }
+
     if (reduce) {
       // Static snapshot -- no animation frame is ever scheduled.
-      paint(ctx, width, eventsRef.current, 0);
-      return undefined;
+      paint(ctx, widthRef.current, eventsRef.current, 0);
+      return () => {
+        if (observer) observer.disconnect();
+      };
     }
 
     function frame(ts) {
       if (startRef.current == null) startRef.current = ts;
-      const offset = ((ts - startRef.current) * SPEED_PX_PER_MS) % (TICK_W + GAP);
-      paint(ctx, width, eventsRef.current, offset);
+      const pitch = tickPitch(widthRef.current, eventsRef.current.length);
+      const offset = ((ts - startRef.current) * SPEED_PX_PER_MS) % pitch;
+      paint(ctx, widthRef.current, eventsRef.current, offset);
       rafRef.current = requestAnimationFrame(frame);
     }
     rafRef.current = requestAnimationFrame(frame);
     return () => {
+      if (observer) observer.disconnect();
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
       startRef.current = null;
@@ -106,7 +154,7 @@ export default function StreamRail({ events = [] }) {
       typeof window !== "undefined" &&
       window.matchMedia &&
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduce) paint(canvas.getContext("2d"), canvas.width, events, 0);
+    if (reduce) paint(canvas.getContext("2d"), widthRef.current || canvas.clientWidth, events, 0);
   }, [events]);
 
   return (

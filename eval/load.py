@@ -106,9 +106,16 @@ REPO_ROOT_FROM_LOAD = None  # set lazily to avoid an import at module load
 def _recall_json(recall) -> Optional[dict]:
     if recall is None:
         return None
+    # Source: plan FIX-BE-05 / M-040 -- `ci_low`/`ci_high` are a 95% Wilson
+    # interval on the ACHIEVED false-positive rate (`metrics.py::recall_at_fpr`
+    # -> `_wilson_interval(best_fp, n_neg)`), NOT on recall. The correctly-named
+    # `fpr_ci_low`/`fpr_ci_high` + `ci_basis` are added; the old keys are kept
+    # as deprecated aliases so no consumer breaks (additive, schema v2).
     return {
         "value": recall.value, "n_neg": recall.n_neg, "resolvable": recall.resolvable,
         "ci_low": recall.ci_low, "ci_high": recall.ci_high,
+        "fpr_ci_low": recall.ci_low, "fpr_ci_high": recall.ci_high,
+        "ci_basis": "wilson_on_achieved_fpr",
     }
 
 

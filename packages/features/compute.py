@@ -49,6 +49,13 @@ WINDOW_TTL_SLACK_MS = 60_000
 # the S_t statistic itself is Day 6 scope.
 CUSUM_BUCKET_S = 10
 
+# Source: remediation plan FIX-004 / §10 -- replay-scoped idempotency keys get a
+# 1-hour TTL instead of the storefront's 24 hours. Correctness now comes from
+# the run namespace, not the TTL; this is hygiene, so a long demo session does
+# not accumulate a day's worth of dead per-run keys. Storefront traffic keeps
+# IDEM_TTL_MS untouched, because Threat Model §3's retry contract depends on it.
+REPLAY_IDEM_TTL_MS = 60 * 60 * 1000
+
 FEATURE_NAMES: Tuple[str, ...] = (
     "attempts_per_ip_60s",
     "attempts_per_ip_5m",
@@ -182,22 +189,37 @@ class FeatureVector:
     # through here for Layer 2a. Also NOT in snapshot() / FEATURE_NAMES.
     cusum_bucket_index: int = 0
     cusum_bucket_count: int = 0
+    # Source: remediation plan FIX-016 (AUDIT-017) -- the merchant-wide 5-minute
+    # attempt count, so the D1 tile renders a SERVER number instead of counting
+    # a capped frontend buffer. Defaulted and outside FEATURE_NAMES, exactly
+    # like distinct_cards_per_ip_30m_raw.
+    attempts_per_merchant_5m: float = 0.0
 
     def snapshot(self) -> dict:
         data: dict = dict(self.values)
         data["trusted"] = self.trusted
         data["baseline_coverage"] = self.baseline_coverage
+        # Published on the SSE event and persisted with the attempt, so the
+        # tile's number has a named, auditable backend source. Additive: every
+        # consumer projects by FEATURE_NAMES (eval/corpus.py) or reads by key.
+        data["attempts_per_merchant_5m"] = self.attempts_per_merchant_5m
         if self.degraded_reason is not None:
             data["degraded_reason"] = self.degraded_reason
         return data
 
 
-def compute_features(store: WindowStore, ctx: FeatureContext) -> FeatureVector:
+def compute_features(
+    store: WindowStore, ctx: FeatureContext, idem_namespace: str = ""
+) -> FeatureVector:
     """
     Source: TRD §6.3 -- one atomic call covers idempotency, every window,
     event_id-reuse, the 24h card counter, and the CUSUM bucket. Exactly one
     store.score_path() call per invocation (asserted by
     tests/acceptance/test_one_round_trip.py).
+
+    `idem_namespace` (FIX-004) scopes ONLY the idempotency key, never the
+    digest. Defaulted to `""` so all 25 existing call sites -- and every
+    persisted `idem_digest` -- are byte-identical to what shipped.
     """
     ipua = ipua_key(ctx.ip, ctx.ua_class)
     # Source: Day-3 Plan Step 5 implementer note -- ScoreRequest.session_id
@@ -227,6 +249,16 @@ def compute_features(store: WindowStore, ctx: FeatureContext) -> FeatureVector:
         # appended at index 10 so no existing positional index shifts and the
         # round trip stays at exactly one score_path() call.
         w("ip", ctx.ip, "card", ctx.card_hash, WINDOW_30M_MS),                                        # 10: distinct_cards_per_ip_30m (raw)
+        # Source: remediation plan FIX-016 (AUDIT-017) -- attempts for the whole
+        # MERCHANT over 5 minutes, appended at index 11 so no existing
+        # positional index shifts and the round trip stays at exactly one
+        # score_path() call. The D1 "Attempts - 5 min" tile used to count the
+        # dashboard's 200-event buffer, which silently capped the number at 200
+        # during the exact burst it existed to show, and made it non-monotonic
+        # as the event-time window slid. NOT in FEATURE_NAMES and not in the
+        # model input: the 24-feature contract and the training corpus are
+        # byte-identical (asserted by test_attempts_window.py).
+        w("merchant", ctx.merchant_id, "ev", ctx.attempt_uid, WINDOW_5M_MS),                          # 11: attempts_per_merchant_5m
     )
 
     # Source: Threat Model v2 §3 point 2 -- the idempotency key is
@@ -247,13 +279,14 @@ def compute_features(store: WindowStore, ctx: FeatureContext) -> FeatureVector:
         idem_digest=idem_digest,
         payload_digest=ctx.payload_digest,
         attempt_uid=ctx.attempt_uid,
-        idem_ttl_ms=IDEM_TTL_MS,
+        idem_ttl_ms=IDEM_TTL_MS if not idem_namespace else REPLAY_IDEM_TTL_MS,
         event_id=ctx.event_id,
         card_hash=ctx.card_hash,
         card24_ttl_ms=CARD24_TTL_MS,
         windows=windows,
         cusum_bucket_s=CUSUM_BUCKET_S,
         window_ttl_slack_ms=WINDOW_TTL_SLACK_MS,
+        idem_namespace=idem_namespace,
     )
     snap = store.score_path(request)
     counts = snap.counts
@@ -310,6 +343,7 @@ def compute_features(store: WindowStore, ctx: FeatureContext) -> FeatureVector:
         idem_digest=idem_digest,
         distinct_cards_per_ip_5m_raw=float(counts[3]),
         distinct_cards_per_ip_30m_raw=float(counts[10]),
+        attempts_per_merchant_5m=float(counts[11]),
         cusum_bucket_index=int(snap.cusum_bucket_index),
         cusum_bucket_count=int(snap.cusum_bucket_count),
     )

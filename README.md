@@ -38,12 +38,20 @@ template as an always-available fallback. Day 9 (rehearsal / hardening) and
 The dashboard (`services/dashboard`, port `5174`) and storefront
 (`services/storefront`, port `5173`) are two Vite + React apps with a plain-CSS
 design-token layer (dark `.tg-app` / light `.st-app` — no Tailwind, Decision
-95). The dashboard shell carries the **Stream Rail** on every screen, the
-**threat band** (renders `threat_state` verbatim; text label + distinct ring
-glyph, never colour alone), and up to three **monochrome** system-state banners
-(advisory mode / rules-only shedding / fail-open — Tollgate's own health is
-never a threat colour). SSE drops fall back to 5-second polling of
-`GET /v1/stream/recent?after=<attempt_uid>` and recover to live on reconnect;
+95). The dashboard shell carries the **Stream Rail** on every screen (sized by a
+`ResizeObserver`, DPR-aware, pitch derived from the viewport so the buffer spans
+the canvas at any width), the **threat band** (renders `threat_state` verbatim;
+text label + distinct ring glyph, never colour alone), and up to three
+**monochrome** system-state banners (advisory mode / rules-only shedding /
+fail-open — Tollgate's own health is never a threat colour).
+
+On mount the dashboard opens the SSE stream **and** back-fills
+`GET /v1/stream/recent` concurrently, queueing live frames until the back-fill
+resolves and merging through a de-duplicating set — so a dashboard opened or
+refreshed mid-attack reconstructs the true state rather than showing an
+all-clear screen. The connection chip reads `connecting` → `live`; `polling` and
+`reconnecting` are reserved for real degradation (SSE drops fall back to
+5-second polling of `GET /v1/stream/recent?after=<attempt_uid>`).
 `prefers-reduced-motion` freezes the rail (static snapshot) and the ticker.
 
 - **D3 Incident Detail** — `GET /v1/incidents/{id}` returns the read model
@@ -140,10 +148,12 @@ on an `easy` replay the threat band moves to **UNDER ATTACK**, the
 `ENFORCEMENT` tile climbs (`2 / 10`), and Layer 2b opens incidents that
 resolve to `challenge`. The `store_baseline` + tuned `policy_config` steps are
 required for Layer 2 to load; without them the scorer runs the byte-identical
-Day-5 rules+model path. Because replay `attempt_uid`s are deterministic per
-`(tier, seed)`, re-run `scripts.seed_merchant` (fresh `tollgate.db`) after
-re-tuning the policy so the demo DB does not carry `INSERT OR IGNORE`-shadowed
-rows from an earlier policy version.
+Day-5 rules+model path.
+
+`scripts.seed_merchant` uses `INSERT OR IGNORE` on the merchant row: if a
+merchant already exists it prints a key that was never stored, and every
+subsequent request 401s. Re-run it against a **fresh** `tollgate.db`, or delete
+the merchant row first.
 
 `TOLLGATE_REDIS_URL` is optional. If it's unset, or Redis is unreachable at
 startup, the scorer logs a fallback notice and runs on `InMemoryWindowStore`
@@ -158,6 +168,76 @@ the narrator vars) can all instead live in a repo-root `.env` — `cp .env.examp
 .env` and edit. The scorer loads it once at startup (`packages/config/env.py`,
 `override=False` — a real exported variable or an inline prefix still wins).
 `.env` is gitignored; only `.env.example` is committed.
+
+## Replay lifecycle — Launch, Stop, Reset, repeat runs
+
+The **backend owns the lifecycle**; the dashboard never derives it from the
+event stream (Decision 102). Eight wire states, split into a terminal set
+(`idle`, `stopped`, `finished`, `failed` — controls enabled) and a busy set
+(`starting`, `running`, `stopping`, `resetting` — controls disabled).
+
+| Route | Auth | Behaviour |
+|---|---|---|
+| `POST /v1/replay/start` | **key required** | `202` + the snapshot. Mints a fresh `run_id`. From a terminal-but-dirty state it auto-clears first and reports `auto_reset: true` with the per-layer `cleared` map. `409` while busy. |
+| `POST /v1/replay/stop` | **key required** | Waits (≤ 2 s) for the loop to acknowledge and returns the TRUE terminal snapshot; on timeout `stopping`, which the poll resolves. Never a stale `running`. |
+| `POST /v1/replay/reset` | **key required** | Transactional: cancel → await termination → clear → publish → `idle`. `200` with `cleared` + `degraded`; `409` (state untouched) if the task will not die. |
+| `GET /v1/replay/status` | open | The authoritative snapshot. Deliberately unauthenticated (Decision 107) so a refresh reconstructs even when the dashboard key is misconfigured. |
+
+`run_id` is a ULID minted per run and is the frontend's **single reset signal**:
+when it changes — including to `null` on Reset — every event-derived surface
+(ticker, rail, tiles, band, incidents) reinitialises and re-back-fills. No
+component clears itself.
+
+Three transports carry the same snapshot: a `replay_status` **control frame** on
+the SSE stream (low latency), the **HTTP response** of every start/stop/reset,
+and a **1 s poll** of `/v1/replay/status` while non-terminal. The poll is what
+survives a missed frame, a dead task and a page refresh; a snapshot with an
+older `updated_at_ms` is ignored, so a late frame cannot move the UI backwards.
+
+**Repeat runs work.** Launch the same tier again and you get a new `run_id` and
+a full second run: idempotency keys are namespaced per run
+(`tg:{m}:idem:r{run_id}:{digest}`) and `attempt_uid` is run-scoped, so neither
+Redis nor SQLite silently swallows a repeat (Decision 103).
+
+**60× demo pacing.** The DC strip's `pace from episode` checkbox (default on)
+sends `pace_from: "episode"`: the pre-attack hours are scored at full tilt and
+wall-clock pacing engages ~20 s of event time before the episode, so the attack
+is visible in seconds instead of after ~3 minutes. Same events, same order, same
+virtual times, same decisions — only the sleep changes (Decision 106).
+
+**Error copy.** The strip prefers the server's `detail`, then maps
+`401 → "API key rejected — check VITE_TOLLGATE_API_KEY"`,
+`409 → "A replay is already running"`, `503 → "Scorer unavailable"`, and a
+network failure to `"Cannot reach the scorer"`. Errors clear on the next
+success and after 8 s. A partially-failed reset reports which layer is dirty
+rather than claiming success.
+
+## Performance and stability gate
+
+`scripts/verify_60x.py` is verification-only (never imported by the service) and
+implements the acceptance gates:
+
+```
+uv run python -m scripts.verify_60x --gate all --redis redis://localhost:6379/9
+uv run python -m scripts.verify_60x --gate 60x --faulthandler       # native-fault path
+uv run python -m scripts.verify_60x --gate throughput --out report.json
+```
+
+- **60x** — 3 consecutive full `easy` runs at speed 60, reset between, with a
+  wall-clock `POST /v1/score` injected at ~50 % of each. That interleaving is
+  the one that crosses replay time and serving time, and it is what wedged the
+  scorer before the Layer-2 catch-up bound (Decision 108).
+- **crossing** — 5 repetitions of both crossing orders; each must complete and
+  log a bounded-discontinuity WARNING rather than spin.
+- **throughput** — 20 consecutive `easy` runs at speed 0, carrying the
+  repeatability and drainer gates: identical event counts, no run swallowed,
+  Redis key count back to its floor after every reset, `attempt_score` row
+  count == events scored, drainer alive, `connect()` calls ≤ 2 per run.
+
+`TOLLGATE_FAULTHANDLER=1` arms `faulthandler` plus a repeating stack dump. It is
+env-gated because the audit's own caveat stands — the two SIGSEGVs it recorded
+happened *under* `dump_traceback_later`, so the diagnostic is itself a suspect
+and the gate is run both ways.
 
 ## Evaluation harness (Day 4)
 
@@ -292,6 +372,11 @@ Every score request runs one of three rungs, all in `services/scorer/routes_scor
 all **outside** the Layer-2 atomic block (so the 100-concurrent-vs-sequential CUSUM
 guarantee holds):
 
+Replay control is authenticated: `POST /v1/replay/start`, `/stop` and `/reset`
+all require `X-Tollgate-Key` and return `503` (never a bypass) when the auth
+backend is unavailable with a cold key cache. `GET /v1/replay/status` is
+deliberately open, consistent with `/v1/stream` — see Decision 107.
+
 | Rung | Trigger | Behaviour |
 |---|---|---|
 | **FULL** | merchant token bucket has a token | `score_attempt()` as Day 6, plus an `availability` field on SSE |
@@ -374,9 +459,27 @@ uv run python -m eval.harness --split all --seed 42 \
 ```
 uv run pytest -q                # full suite
 uv run pytest -q -m safety      # simulator import-closure / egress safety
-uv run pytest -q -m slow        # durability, lock contention, SSE, Day-2 E2E
+uv run pytest -q -m slow        # durability, lock contention, SSE, Day-2 E2E, scenarios A-G
 uv run pytest -q -m characterization  # informational only, never a gate
 uv run pytest -q -m redis       # Day-3 Redis-backed tests; skip cleanly if Redis is down
+```
+
+**Hermeticity.** Every test's configuration is a function of its own parameters.
+Subprocess-spawning tests hand the child an explicit env ALLOW-LIST plus
+`TOLLGATE_SKIP_DOTENV=1` (`tests/acceptance/_scorer_process.py`) — no
+`TOLLGATE_*` is ever inherited — and an autouse fixture restores `os.environ`
+and `packages.config.env._loaded` around every test. Before this, the first
+acceptance test to build an app loaded `.env` into the pytest process, and every
+later `_spawn` silently promoted its subprocess from the in-memory store to a
+shared Redis: one test decided another test's storage backend, which is why
+`test_day2_e2e` passed alone and failed in-suite. It is now parametrised over
+both backends explicitly (`memory`, and `redis` against a dedicated logical DB
+it flushes itself), so the Redis path is a deliberate gate rather than an
+inherited accident:
+
+```
+uv run pytest -q tests/acceptance/test_day2_e2e.py           # both backends
+uv run pytest -q $(python -c "import pathlib;print(' '.join(sorted((str(p) for p in pathlib.Path('tests').rglob('test_*.py')), reverse=True)))")   # reversed file order
 ```
 
 The Day-4 evaluation-harness tests (`tests/acceptance/test_harness_sanity.py`,

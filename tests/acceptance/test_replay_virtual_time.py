@@ -86,13 +86,28 @@ def _build_state(tmp_path: Path) -> ScorerState:
 
 
 async def _run_and_collect(state: ScorerState, request, stream):
+    """Collects the ATTEMPT events published during a run.
+
+    Remediation plan FIX-008 added lifecycle control frames
+    (`{"type": "replay_status", ...}`) to the same bus, so "everything the bus
+    published" is no longer the same set as "one event per scored attempt". The
+    frames are separated here rather than counted: every assertion in this file
+    is about attempt events and is unchanged, and `control_frames` is returned
+    so the separation itself can be asserted instead of assumed. Control frames
+    carry no `attempt_uid`, which is exactly why `bus.recent()`'s cursor logic
+    ignores them too (plan F-G).
+    """
     from services.scorer.replay import ReplayDriver  # noqa: PLC0415 -- module under test
 
     events = []
+    control_frames = []
 
     async def _collect():
         async for event in state.event_bus.subscribe():
-            events.append(event)
+            if event.get("type") == "replay_status":
+                control_frames.append(event)
+            else:
+                events.append(event)
 
     collector = asyncio.create_task(_collect())
     await asyncio.sleep(0)  # let the subscriber register before publishing starts
@@ -114,6 +129,7 @@ async def _run_and_collect(state: ScorerState, request, stream):
         await collector
     except asyncio.CancelledError:
         pass
+    _run_and_collect.last_control_frames = control_frames
     return driver, status, events
 
 
@@ -196,6 +212,21 @@ class TestA14VirtualTimeEqualsEventTime:
 
         assert len(events) == len(stream), (
             f"expected one published event per stream event, got {len(events)} for {len(stream)} inputs"
+        )
+        # Remediation plan FIX-008 / AUDIT-002: the lifecycle must also announce
+        # itself, and a terminal transition must be one of the announcements --
+        # its absence is exactly why a finished run rendered forever as RUNNING.
+        frames = _run_and_collect.last_control_frames
+        assert frames, "no replay_status control frame was published during the run"
+        assert all("attempt_uid" not in f for f in frames), (
+            "a control frame carried an attempt_uid, which would corrupt "
+            "bus.recent()'s cursor (plan F-G)"
+        )
+        assert frames[-1]["replay"]["state"] == "finished", (
+            f"the terminal transition published {frames[-1]['replay']['state']!r}, not 'finished'"
+        )
+        assert frames[-1]["replay"]["sent"] == len(stream), (
+            "the terminal frame does not carry the final count -- AUDIT-002's signature"
         )
         for source_event, published in zip(stream, events):
             assert published["ingest_time"] - epoch_ms == source_event.t_ms, (

@@ -39,6 +39,9 @@ data/corpus/
 # Node
 node_modules/
 dist/
+# Vite writes this transient ESM shim next to vite/vitest config files while
+# resolving an ESM config; it is never source.
+*.timestamp-*.mjs
 
 # Environment / secrets
 .env
@@ -56,3 +59,5 @@ Thumbs.db
 
 # Skills
 .superpowers
+# Source: remediation plan §17 -- scripts/verify_60x.py scratch output
+.verify60x/

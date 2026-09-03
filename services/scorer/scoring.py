@@ -69,8 +69,24 @@ def _top_k_contributors_json(contribs, k: int) -> str:
     return json.dumps([{"feature": name, "contribution": round(float(v), 6)} for name, v in ranked])
 
 
+def _decision_cache_key(idem_namespace: str, idem_digest: str) -> tuple:
+    """Source: remediation plan F-E / FIX-004 -- the cache is keyed by the PAIR,
+    matching the Redis key `tg:{m}:idem:{ns}{digest}` exactly.
+
+    Keying on the digest alone was a latent correctness hole that became
+    reachable the moment reset started working: run B's attempt could take
+    `idempotent_replay=True` from a key run A wrote, then either return run A's
+    decision or MISS the cache and fall through to full scoring against a
+    feature vector of zeros -- silently wrong output, no error anywhere."""
+    return (idem_namespace, idem_digest)
+
+
 def _remember_decision(
-    state: ScorerState, idem_digest: str, attempt_uid: str, decision_value: str
+    state: ScorerState,
+    idem_digest: str,
+    attempt_uid: str,
+    decision_value: str,
+    idem_namespace: str = "",
 ) -> None:
     """Source: Day-7 Plan §4 Step 2 -- record the resolved decision so a later
     idempotent replay of the same request returns it verbatim. Bounded FIFO:
@@ -79,9 +95,10 @@ def _remember_decision(
     if not idem_digest:
         return
     cache = state.decision_cache
-    if idem_digest in cache:
+    key = _decision_cache_key(idem_namespace, idem_digest)
+    if key in cache:
         return
-    cache[idem_digest] = (attempt_uid, decision_value)
+    cache[key] = (attempt_uid, decision_value)
     if len(cache) > DECISION_CACHE_MAX:
         del cache[next(iter(cache))]
 
@@ -452,7 +469,12 @@ async def score_attempt(
     ulid: Optional[UlidGenerator] = None,
     stopwatch: Optional[Stopwatch] = None,
     user_agent: str = "",
+    idem_namespace: str = "",
 ) -> Tuple[ScoreResponse, dict]:
+    """`idem_namespace` (remediation plan FIX-004) scopes the idempotency KEY to
+    one replay run. The storefront path never passes it, so its behaviour --
+    key, digest, TTL and the Threat Model §3 retry contract -- is byte-identical
+    to what shipped."""
     active_clock = clock if clock is not None else state.clock
     active_ulid = ulid if ulid is not None else state.ulid
     active_stopwatch = stopwatch if stopwatch is not None else Stopwatch()
@@ -476,7 +498,7 @@ async def score_attempt(
         amount_minor=body.amount_minor,
         session_id=body.session_id,
     )
-    features = compute_features(state.window_store, feature_ctx)
+    features = compute_features(state.window_store, feature_ctx, idem_namespace)
 
     # Source: Day-7 Plan §4 Step 2 -- stored-decision replay reply. An
     # idempotent replay (SET NX found the key) carries no new observation;
@@ -487,7 +509,9 @@ async def score_attempt(
     # auth_attempt / attempt_score row or attempt event is produced. A
     # cross-process or FIFO-evicted miss falls through to the pre-Day-7 path.
     if features.idempotent_replay:
-        cached = state.decision_cache.get(features.idem_digest)
+        cached = state.decision_cache.get(
+            _decision_cache_key(idem_namespace, features.idem_digest)
+        )
         if cached is not None:
             stored_uid, stored_decision_value = cached
             replay_response = ScoreResponse(
@@ -636,7 +660,9 @@ async def score_attempt(
     # Source: Day-7 Plan §4 Step 2 -- remember the resolved decision before it
     # is spooled, so a later idempotent replay of this exact request returns
     # the same (attempt_uid, decision) without re-scoring or re-spooling.
-    _remember_decision(state, features.idem_digest, attempt_uid, decision.value)
+    _remember_decision(
+        state, features.idem_digest, attempt_uid, decision.value, idem_namespace
+    )
 
     spool_payload = {"attempt": attempt.to_dict(), "score": score_record.to_dict()}
     if day6 is not None and day6.spool_extras:
@@ -655,10 +681,13 @@ async def score_attempt(
     if state.replay_driver is not None:
         replay_snapshot = state.replay_driver.status.to_dict()
     else:
-        replay_snapshot = {
-            "state": "idle", "tier": None, "seed": None, "speed": None,
-            "sent": 0, "total": 0, "episode_id": None, "virtual_time_ms": 0,
-        }
+        # Local import: replay.py imports this module, so a top-level import
+        # would close the cycle. Building the idle snapshot from the dataclass
+        # rather than hand-writing it keeps this branch in step with the wire
+        # shape automatically -- the hand-written dict had already fallen behind.
+        from services.scorer.replay import ReplayStatus  # noqa: PLC0415
+
+        replay_snapshot = ReplayStatus().to_dict()
 
     # Source: Day-2 Plan Decision 34 -- SSE gains rules_fired, feature_snapshot,
     # threat_state, replay; card_hash is never on the stream (/v1/stream is

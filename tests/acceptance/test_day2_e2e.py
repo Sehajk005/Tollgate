@@ -2,37 +2,76 @@
 Source: Day-2 Plan §I acceptance test A16 -- the whole Day-2 claim, end to
 end, against a real scorer subprocess (same harness pattern as
 tests/acceptance/test_sse.py and test_durability.py, per Decision 22).
-`/v1/replay/*` does not exist yet (Day-2 Step 7-9); this fails with a
-connection/404 error until then, which is an honest failure of a real
-expectation, not an assertion on a fabricated constant.
+
+Remediation plan FIX-000 (AUDIT-010): this test used to pass alone and fail
+in-suite, because `_spawn` handed the subprocess `dict(os.environ)` and an
+earlier test had already loaded `.env` -- including `TOLLGATE_REDIS_URL` --
+into the pytest process. The subprocess then wrote into a shared Redis DB
+whose 24-hour idempotency keys (AUDIT-005) suppressed every window write, so
+`rules_fired` came back empty. The backend is now a function of the test's own
+PARAMETER, never of what ran before it:
+
+  * `memory` -- hermetic, the default, no external dependency;
+  * `redis`  -- marked `@pytest.mark.redis`, against a DEDICATED logical DB
+    that the fixture flushes itself, so the Redis path is a deliberate gate
+    that CATCHES AUDIT-005 regressions instead of being killed by them.
+
+Both parameters run the identical assertions.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import socket
-import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 import pytest
 
 from packages.storage.db import connect, initialize_schema
 from services.scorer.auth import hash_api_key
+from tests.acceptance._scorer_process import free_port, spawn_scorer, wait_for_health
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-RUNNER = REPO_ROOT / "scripts" / "_run_scorer_for_test.py"
 SCHEMA_PATH = REPO_ROOT / "schema.sql"
 
+# A logical DB this suite owns outright, so flushing it can never destroy a
+# developer's own Redis contents in DB 0.
+REDIS_TEST_DB = 9
 
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+
+def _redis_test_url() -> str:
+    base = os.environ.get("TOLLGATE_TEST_REDIS_URL") or "redis://localhost:6379"
+    parts = urlsplit(base)
+    return urlunsplit((parts.scheme, parts.netloc, f"/{REDIS_TEST_DB}", "", ""))
+
+
+@pytest.fixture
+def backend_env(request) -> dict:
+    """The scorer subprocess's storage configuration, chosen by the test
+    parameter and by nothing else."""
+    if request.param == "memory":
+        # A generator fixture must yield on every path -- `return {}` here would
+        # hand pytest a fixture that never produced a value.
+        yield {}
+        return
+
+    redis_lib = pytest.importorskip("redis")
+    url = _redis_test_url()
+    try:
+        client = redis_lib.Redis.from_url(url, socket_connect_timeout=1, socket_timeout=1)
+        client.ping()
+    except Exception:  # noqa: BLE001
+        pytest.skip(f"Redis unreachable at {url}")
+    client.flushdb()
+    try:
+        yield {"TOLLGATE_REDIS_URL": url}
+    finally:
+        client.flushdb()
+        client.close()
 
 
 def _seed_merchant(db_path: Path) -> str:
@@ -64,43 +103,25 @@ def _seed_merchant(db_path: Path) -> str:
     return raw_key
 
 
-def _wait_for_health(port: int, timeout_s: float = 10.0) -> None:
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        try:
-            r = httpx.get(f"http://127.0.0.1:{port}/healthz", timeout=0.5)
-            if r.status_code == 200:
-                return
-        except httpx.HTTPError:
-            pass
-        time.sleep(0.1)
-    raise TimeoutError("scorer did not become healthy in time")
-
-
-def _spawn(db_path: Path, spool_dir: Path, port: int) -> subprocess.Popen:
-    full_env = dict(os.environ)
-    full_env["TOLLGATE_TEST_DB"] = str(db_path)
-    full_env["TOLLGATE_TEST_SPOOL"] = str(spool_dir)
-    full_env["TOLLGATE_TEST_PORT"] = str(port)
-    return subprocess.Popen(
-        [sys.executable, str(RUNNER)],
-        env=full_env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-
-
 @pytest.mark.slow
-def test_launch_easy_replay_drives_rules_decisions_and_threat_band_end_to_end(tmp_path):
+@pytest.mark.parametrize(
+    "backend_env",
+    ["memory", pytest.param("redis", marks=pytest.mark.redis)],
+    indirect=True,
+    ids=["memory", "redis"],
+)
+def test_launch_easy_replay_drives_rules_decisions_and_threat_band_end_to_end(
+    tmp_path, backend_env
+):
     db_path = tmp_path / "tollgate.db"
     spool_dir = tmp_path / "spool"
     initialize_schema(db_path, SCHEMA_PATH)
     raw_key = _seed_merchant(db_path)
-    port = _free_port()
+    port = free_port()
 
-    proc = _spawn(db_path, spool_dir, port)
+    proc = spawn_scorer(db_path, spool_dir, port, extra_env=backend_env)
     try:
-        _wait_for_health(port)
+        wait_for_health(port)
 
         received = []
         stop_listening = threading.Event()

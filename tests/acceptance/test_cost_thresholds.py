@@ -55,6 +55,29 @@ class TestCostThresholds:
         store_profile = load_store_profile()
         assert model.aov_minor == store_profile["aov_minor"]
 
+    def test_theta_challenge_accessor_equals_1800_over_7000_to_full_precision(self):
+        # Source: plan FIX-BE-01 / M-020 -- the hand-typed rounded constant is
+        # gone; theta_challenge() reads the UNROUNDED value from the cost model.
+        from eval.report import theta_challenge
+
+        assert theta_challenge() == 1800.0 / (1800.0 + 5200.0)
+        assert theta_challenge() == load_cost_model().tier_ladder()["challenge"]
+
+    def test_no_rounded_0p257_literal_remains_anywhere_in_eval(self):
+        # A legitimate absence-assertion (plan FIX-BE-01 acceptance #1): it
+        # guards against a re-introduced duplicate constant, not a rendering.
+        import re
+        from pathlib import Path
+
+        eval_dir = Path(__file__).resolve().parents[2] / "eval"
+        pattern = re.compile(r"0\.257")
+        offenders = []
+        for path in eval_dir.rglob("*.py"):
+            for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if pattern.search(line):
+                    offenders.append(f"{path.relative_to(eval_dir.parent)}:{i}: {line.strip()}")
+        assert not offenders, "rounded 0.257 literal(s) still in eval/:\n" + "\n".join(offenders)
+
     def test_seeded_policy_config_thresholds_equal_the_analytic_ladder(self, day5_corpus):
         # Source: Day-6 Plan §4 -- close the loop between the derived table
         # and what the serving path actually reads. scripts/tune_cusum.py

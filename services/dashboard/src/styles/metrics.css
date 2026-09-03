@@ -1,0 +1,65 @@
+/*
+ * METRICS-REMEDIATION-PLAN-2026-09-02.md §22 -- the first real responsive
+ * layer in the dashboard. Container-driven, not device-driven: the bar/value
+ * columns shrink first, the DATA element never collapses.
+ *
+ * Full geometry verification is Playwright (§22.3 / §23.3) -- jsdom does not
+ * lay out. This sheet is the source of truth those gates check against.
+ */
+
+.tg-metrics {
+  max-width: 1280px;
+  margin-inline: auto;
+  padding: var(--tg-space-6, 24px);
+}
+
+/* Wide tables (Block 2 at 42 rows is the widest on the page) scroll inside a
+   keyboard-focusable region rather than overflowing the document (M-027). */
+.tg-scroll-x {
+  overflow-x: auto;
+  max-width: 100%;
+  -webkit-overflow-scrolling: touch;
+}
+.tg-scroll-x:focus-visible {
+  outline: 2px solid var(--tg-primary);
+  outline-offset: 2px;
+}
+/* Let the REGION scroll rather than the table compressing until cells wrap and
+   rows lose their shared height (M-026): the table keeps its natural width and
+   the `.tg-scroll-x` ancestor clips + scrolls it. Inert where `width: 100%`
+   (inline) already exceeds the content width. */
+.tg-scroll-x > table {
+  min-width: max-content;
+}
+
+/* Underscore-joined feature identifiers must be able to break (M-025). */
+.tg-metrics .tg-mono-caption,
+.tg-metrics code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/*
+ * `.tg-metric-row` is the plan's §22.2 bar-row grid. Block1PerTier, AuditBars
+ * and UnavailableGroup carry it alongside their own inline `minmax(_, 1fr)`
+ * grid (the desktop default; the `1fr` data column is the "key inversion" --
+ * chrome shrinks first, data never collapses). At narrow viewports the fixed
+ * column minimums (~484 px for Block 1's four tracks) would overflow the
+ * document, so these rules override `grid-template-columns` to collapse the
+ * row. Verified by the Playwright viewport gates (§22.3, 390/768/1280/1536) --
+ * jsdom does not lay out.
+ */
+@media (max-width: 768px) {
+  .tg-metrics {
+    padding: var(--tg-space-4, 16px);
+  }
+  .tg-metric-row {
+    grid-template-columns: minmax(0, 1fr) auto !important;
+  }
+}
+
+@media (max-width: 480px) {
+  .tg-metric-row {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+}

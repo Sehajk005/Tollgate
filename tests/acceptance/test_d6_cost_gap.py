@@ -99,5 +99,67 @@ class TestD6CostGap:
         assert inp["f1_optimal_point"] == [b4["f1_optimal"]["fpr"], b4["f1_optimal"]["tpr"]]
         assert inp["cost_optimal_point"] == [b4["cost_optimal"]["fpr"], b4["cost_optimal"]["tpr"]]
 
-    def test_regime_switch_saving_is_non_negative(self, b4):
-        assert b4["regime_switch_saving_minor"] >= 0.0
+    # ---- plan §24.2: the mandatory numeric upgrade -----------------------
+
+    def test_regime_switch_saving_is_recomputed_exactly_from_the_anchors(self, b4):
+        """Independently recompute the ₹2,32,145 headline from the artifact's
+        own curve_pi1 and the hardcoded C_FN=5200 / C_FP=1800 anti-circularity
+        anchors -- NOT `>= 0`. Ties the backend number to the exact rupee string
+        the UI must render (FE-T-FMT-01 asserts the other half)."""
+        pi1 = b4["pi1"]
+        cop = b4["cost_optimal"]
+        stay_cost_pi1 = _cost(cop["fpr"], cop["tpr"], pi1)
+        best_cost_pi1 = min(_cost(fpr, tpr, pi1) for fpr, tpr, _c in b4["curve_pi1"])
+        expected = stay_cost_pi1 - best_cost_pi1
+
+        assert stay_cost_pi1 == pytest.approx(24855010.972933434, abs=1e-6)
+        assert best_cost_pi1 == pytest.approx(1640502.7668777597, abs=1e-6)
+        assert expected == pytest.approx(23214508.206055675, abs=1e-6)
+        assert b4["regime_switch_saving_minor"] == pytest.approx(expected, abs=1e-6)
+        assert round(expected / 100) == 232145  # the displayed rupee figure
+
+    def test_cost_optimal_point_is_exactly_the_expected_operating_point(self, b4):
+        cop = b4["cost_optimal"]
+        assert cop["fpr"] == 0.0
+        assert cop["tpr"] == pytest.approx(0.46891002194586684, abs=1e-12)
+        assert cop["cost_pi0"] == pytest.approx(27616.67885881492, abs=1e-6)
+
+    def test_f1_optimal_point_and_its_f1_value_are_exact(self, b4):
+        f1p = b4["f1_optimal"]
+        assert f1p["fpr"] == 0.0
+        assert f1p["tpr"] == pytest.approx(0.46891002194586684, abs=1e-12)
+        assert f1p["f1"] == pytest.approx(0.6384462151394422, abs=1e-12)
+
+    def test_every_curve_cost_is_recomputable_from_the_formula(self, b4):
+        for fpr, tpr, cost in b4["curve_pi0"]:
+            assert cost == pytest.approx(_cost(fpr, tpr, b4["pi0"]), rel=1e-9, abs=1e-6)
+        for fpr, tpr, cost in b4["curve_pi1"]:
+            assert cost == pytest.approx(_cost(fpr, tpr, b4["pi1"]), rel=1e-9, abs=1e-6)
+
+    # ---- plan FIX-M-004 / FIX-M-039 / FIX-M-005 (backend halves) ---------
+
+    def test_optima_coincidence_is_a_backend_fact_not_a_frontend_compare(self, b4):
+        f1p, cop = b4["f1_optimal"], b4["cost_optimal"]
+        assert b4["optima_coincident"] is True
+        assert (f1p["fpr"], f1p["tpr"]) == (cop["fpr"], cop["tpr"])
+
+    def test_rupee_gap_is_flagged_structural_with_a_substantiating_note(self, b4):
+        assert b4["rupee_gap_minor"] == 0.0
+        assert b4["rupee_gap_is_structural"] is True
+        note = b4["rupee_gap_note"]
+        assert "structural" in note and "precision" in note
+
+    def test_decision_region_bound_contains_both_optima_and_the_next_vertex(self, b4):
+        bound = b4["decision_region_fpr_max"]
+        assert bound > 0.0
+        assert b4["cost_optimal"]["fpr"] < bound
+        next_vertices = sorted(f for f, _t, _c in b4["curve_pi0"] if f > b4["cost_optimal"]["fpr"])
+        assert next_vertices and next_vertices[0] < bound
+
+    def test_ribbon_envelope_is_a_valid_non_crossing_band(self, b4):
+        env = b4["ribbon_envelope"]
+        assert len(env) == len(b4["curve_pi0"])
+        for fpr, lo, hi in env:
+            assert hi >= lo, f"ribbon envelope inverts at fpr={fpr}: lo={lo} hi={hi}"
+        xs = [fpr for fpr, _lo, _hi in env]
+        assert xs == sorted(xs)  # monotone x -> forward/reverse polylines cannot cross

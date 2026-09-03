@@ -7,10 +7,7 @@ process death, not power loss (decision 9).
 
 from __future__ import annotations
 
-import os
 import socket
-import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -19,9 +16,9 @@ import pytest
 
 from packages.storage.db import connect, initialize_schema
 from services.scorer.auth import hash_api_key
+from tests.acceptance._scorer_process import spawn_scorer
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-RUNNER = REPO_ROOT / "scripts" / "_run_scorer_for_test.py"
 SCHEMA_PATH = REPO_ROOT / "schema.sql"
 
 
@@ -74,16 +71,10 @@ def _wait_for_health(port: int, timeout_s: float = 10.0) -> None:
 
 
 def _spawn(db_path: Path, spool_dir: Path, port: int) -> subprocess.Popen:
-    full_env = dict(os.environ)
-    full_env["TOLLGATE_TEST_DB"] = str(db_path)
-    full_env["TOLLGATE_TEST_SPOOL"] = str(spool_dir)
-    full_env["TOLLGATE_TEST_PORT"] = str(port)
-    return subprocess.Popen(
-        [sys.executable, str(RUNNER)],
-        env=full_env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    """Remediation plan FIX-000 -- an explicit allow-list, never
+    `dict(os.environ)`: no `TOLLGATE_*` is inherited and `.env` is skipped, so
+    this test's backend is this test's decision. See _scorer_process.py."""
+    return spawn_scorer(db_path, spool_dir, port)
 
 
 @pytest.mark.slow

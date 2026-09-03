@@ -119,3 +119,52 @@ class TestCalibration:
             assert all(obs[i] <= obs[i + 1] + 1e-6 for i in range(len(obs) - 1)), (
                 f"reliability observed-rate not non-decreasing at pi_s={pi_s}: {obs}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Source: METRICS-REMEDIATION-PLAN-2026-09-02.md FIX-BE-04 / §24.4 -- raw ECE
+# completes Eval Protocol §3.4's {raw, Platt, Platt+prior} triple. The metric
+# itself (`eval/metrics.py::ece`) is unchanged; these pin the new artifact
+# fields and give `ece()` a hand-computable anchor.
+# ---------------------------------------------------------------------------
+
+import json as _json  # noqa: E402
+from pathlib import Path as _Path  # noqa: E402
+
+import pytest  # noqa: E402
+
+_ARTIFACT = _Path(__file__).resolve().parents[2] / "eval" / "outputs" / "d6.json"
+
+
+def test_ece_hand_computed_on_a_four_sample_example():
+    # 2 bins. bin A preds 0.1,0.3 labels 0,0 -> mean 0.2, obs 0.0, |gap| 0.2, w 2.
+    #         bin B preds 0.6,0.9 labels 1,0 -> mean 0.75, obs 0.5, |gap| 0.25, w 2.
+    # ECE = (2/4)*0.2 + (2/4)*0.25 = 0.225
+    assert ece([0.1, 0.3, 0.6, 0.9], [False, False, True, False], n_bins=2) == pytest.approx(
+        0.225, abs=1e-12
+    )
+
+
+def test_committed_artifact_carries_ece_raw_at_both_regimes():
+    b5 = _json.loads(_ARTIFACT.read_text(encoding="utf-8"))["block5_calibration"]
+    for regime in ("pi0", "pi1"):
+        r = b5[regime]
+        assert isinstance(r["ece_raw"], float) and 0.0 <= r["ece_raw"] <= 1.0, regime
+        assert r["ece_gap_platt_prior_vs_platt"] == pytest.approx(
+            r["ece_platt"] - r["ece_platt_prior"], abs=1e-12
+        ), regime
+
+
+def test_prior_correction_verdict_agrees_with_the_pi1_ece_comparison():
+    b5 = _json.loads(_ARTIFACT.read_text(encoding="utf-8"))["block5_calibration"]
+    r1 = b5["pi1"]
+    assert b5["prior_correction_helped_at_pi1"] == (r1["ece_platt"] > r1["ece_platt_prior"])
+    assert b5["prior_correction_helped_at_pi1"] is True
+
+
+def test_the_four_pre_existing_calibration_numbers_are_unchanged():
+    b5 = _json.loads(_ARTIFACT.read_text(encoding="utf-8"))["block5_calibration"]
+    assert b5["pi0"]["ece_platt"] == pytest.approx(0.07031799883085593, abs=1e-15)
+    assert b5["pi0"]["ece_platt_prior"] == pytest.approx(0.0007305349387266664, abs=1e-15)
+    assert b5["pi1"]["ece_platt"] == pytest.approx(0.39547724058805567, abs=1e-15)
+    assert b5["pi1"]["ece_platt_prior"] == pytest.approx(0.2806765620747161, abs=1e-15)

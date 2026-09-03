@@ -225,11 +225,17 @@ DC strip: Launch button   services/dashboard/src/App.jsx
   ▼ (Vite proxy: /v1 -> :8080)
 POST /v1/replay/start  (services/scorer/routes_replay.py:replay_start)
   │
-  ├─ resolve_merchant_id(conn, x_tollgate_key)   -- same auth as /v1/score;
-  │     the loop below never re-authenticates per event
-  ├─ 409 if state.replay_driver.status.state == "running"
-  ├─ driver.mark_starting(request)     -- synchronous, closes the
+  ├─ _auth(state, x_tollgate_key)     -- resolve_merchant_id_cached, same as
+  │     /v1/score; AuthBackendUnavailable -> 503 (Decision 107). The loop
+  │     below never re-authenticates per event.
+  ├─ acquire driver.lifecycle_lock (bounded; 409 on timeout)
+  ├─ 409 if driver.status.state in BUSY_STATES
+  ├─ if driver.status.state != "idle": await driver.reset()   -- AUTO-CLEAR
+  │     from a terminal-but-dirty state; reports auto_reset + cleared map
+  │     (Decision 104)
+  ├─ driver.mark_starting(request)     -- synchronous, mints run_id, closes the
   │     asyncio.create_task() scheduling race against a second rapid /start
+  ├─ task.add_done_callback(...)       -- the exception is ALWAYS retrieved
   └─ state.replay_task = asyncio.create_task(driver.run(request))
        -- returns 202 immediately; the loop below runs concurrently
 
@@ -237,8 +243,14 @@ ReplayDriver.run(request, stream=None)   services/scorer/replay.py
   │
   ├─ epoch_ms = request.epoch_ms or state.clock.now_ms()
   ├─ self._clock = VirtualClock(epoch_ms)                packages/clock/clock.py
-  ├─ ulid = UlidGenerator(clock=self._clock,
-  │           rng=random.Random(f"ulid:{request.seed}"))  -- deterministic attempt_uid
+  ├─ ulid = UlidGenerator(clock=self._clock, rng=random.Random(
+  │           f"ulid:{seed}:{run_id}" if run_id else f"ulid:{seed}"))
+  │     -- deterministic WITHIN a run; unique ACROSS runs, so a repeat run's
+  │        rows are not dropped by INSERT OR IGNORE (Decision 103). Direct
+  │        callers that never mark_starting (eval/corpus.py, A13) keep the
+  │        original seed, so the committed corpus does not move.
+  ├─ idem_namespace = f"r{run_id}:"   -- run-scoped idempotency KEY only;
+  │     idem_digest itself is unchanged (Decision 103)
   ├─ stream = stream or packages.simulator.generate.build_stream(seed, tier, hours)  [§8]
   │
   └─ for ev in stream:
@@ -248,21 +260,138 @@ ReplayDriver.run(request, stream=None)   services/scorer/replay.py
        ├─ await score_attempt(state, merchant_id, ip=ev.ip,
        │       body=ScoreRequest(**ev.to_score_request()),
        │       clock=self._clock, ulid=ulid)              [§1]
-       ├─ if request.speed: await asyncio.sleep((ev.t_ms - prev) / 1000 / speed)
+       ├─ self._set_status(sent=index+1, ...)  -- BEFORE the sleep and before
+       │     the next publish, so the terminal count is never one short
+       ├─ if request.speed and ev.t_ms >= pace_from_ms:
+       │       await asyncio.sleep((ev.t_ms - prev) / 1000 / speed)
        │     -- the ONLY wall-clock call in the loop; affects nothing the
        │        scorer reads (speed=0 vs speed=60 produce identical
-       │        decision sequences -- A13)
-       └─ self._status updated (sent/total/virtual_time_ms) every iteration
+       │        decision sequences -- A13). pace_from skips the SLEEP only
+       │        (Decision 106).
+       └─ else: await asyncio.sleep(0)   -- cooperative yield. Without it an
+             unpaced replay never awaits anything that suspends (an
+             uncontended Lock and an unbounded Queue.put both complete
+             synchronously), so the whole run monopolises the event loop and
+             /healthz, /v1/score and even the 202 for /replay/start itself
+             queue behind it. Measured at 6.4 s for one easy replay on Redis.
 ```
 
-`POST /v1/replay/stop` sets a cooperative flag the loop checks each iteration.
-`POST /v1/replay/reset` clears `state.window_store` (`InMemoryWindowStore.clear()`,
-new on Day 2) and `state.threat` (`ThreatRollup.clear()`) -- required, not
-convenient: without it a second `Launch` in the same process inherits stale
-window/threat state (decisions.md decision 36). `GET /v1/replay/status`
-returns the same `ReplayStatus.to_dict()` mirrored onto every SSE event's
-`replay` key. The scorer's `lifespan` (`services/scorer/app.py`) cancels any
-running replay task on shutdown.
+The scorer's `lifespan` (`services/scorer/app.py`) cancels any running replay
+task on shutdown. §7.1 below supersedes this section's description of
+`stop` / `reset` / `status`, which the 2026-09-01 remediation replaced.
+
+## 7.1 [remediation 2026-09-01] The replay LIFECYCLE — stop, reset, repeat, recovery
+
+Source: Decisions 102-108. This supersedes §7's original description of
+`stop` / `reset` / `status`.
+
+```
+STATES (services/scorer/replay.py)
+  terminal: idle | stopped | finished | failed      -> controls ENABLED
+  busy    : starting | running | stopping | resetting -> controls DISABLED
+
+  idle --start--> starting --> running --+-- last event --> finished
+                                         +-- stop --------> stopping -> stopped
+                                         +-- exception ----> failed
+                                         +-- cancel (reset)-> stopped (reason="reset")
+  any terminal --reset / auto-clear--> resetting --> idle
+```
+
+Every status write goes through `_set_status()`, which stamps `updated_at_ms`;
+a terminal state that already carries a REASON is never overwritten by a later
+stop or cancel (`_finalize`), so a watchdog `failed` cannot be downgraded.
+
+```
+POST /v1/replay/stop  (authenticated)
+  ├─ acquire lifecycle_lock
+  ├─ if already terminal -> return the snapshot
+  ├─ _stop_requested = True; status -> "stopping"; publish control frame
+  ├─ await _stopped_event, bounded at 2.0 s
+  │     the loop sets that event on EVERY exit path (finish/stop/raise/cancel)
+  └─ acknowledged -> the TRUE terminal snapshot
+     timed out    -> "stopping"  (the 1 s poll resolves it; never a stale
+                                  "running", which was AUDIT-003)
+
+POST /v1/replay/reset  (authenticated)
+  ├─ acquire lifecycle_lock
+  ├─ status -> "resetting"; publish control frame
+  ├─ if the task is alive:  stop -> await (2 s) -> cancel -> await (2 s)
+  │     still alive? -> 409, STATE UNTOUCHED. Refusing beats corrupting.
+  ├─ clear each layer INDEPENDENTLY, each in its own try/except:
+  │     window_store.clear(merchant_id)  -> SCAN tg:{m}:* + UNLINK, never FLUSHDB
+  │     threat.clear() · layer2.reset() · incidents.clear()
+  │     policy_engine.clear() · decision_cache.clear()      <- F-E, was missing
+  ├─ status -> idle (run_id=None, sent=0, total=0, tier=None)
+  └─ publish {"type":"replay_status", "reset": true, "replay": {...idle}}
+  -> 200 {"state":"idle", "cleared": {...per layer...}, "degraded": <any failed>}
+
+  Redis unreachable => cleared.window_store:false + degraded:true, and the other
+  five still clear. NEVER a bare 500 (AUDIT-001).
+```
+
+**Ordering is the contract.** `idle` is only reached after the task is awaited,
+and `start` cannot observe the status without holding the same lock, so
+"status says idle while the backend is still scoring" (AUDIT-004) is unreachable
+by construction rather than by timing. Scenario C in
+`tests/acceptance/test_demo_lifecycle.py` asserts it directly: no attempt event
+may appear on the stream after the reset frame.
+
+### Three transports, one snapshot
+
+```
+control frame  {"type":"replay_status","replay":{...},"reset":bool}   lowest latency
+HTTP response  every start/stop/reset returns the snapshot at handler exit
+poll           GET /v1/replay/status on mount + every 1000 ms while non-terminal
+```
+
+The poll is the path that survives a missed frame, a dead task and a page
+refresh. Control frames carry no `attempt_uid`, so `bus.recent()`'s cursor logic
+ignores them and the `/v1/stream/recent` contract is unchanged (plan F-G). The
+frontend reducer ignores any snapshot with an older `updated_at_ms`.
+
+### Supervision
+
+```
+run() wraps the whole loop:
+  except CancelledError -> stopped (stop_reason "reset"), publish, re-raise
+  except Exception      -> failed + error="<Type>: <msg>", logger.exception, publish
+  finally               -> _stopped_event.set(); cancel the watchdog
+
+routes_replay.py: task.add_done_callback(_on_replay_task_done)
+  -> the exception is ALWAYS retrieved (AUDIT-007's mechanism was a stored,
+     never-inspected task handle whose strong reference suppressed even
+     asyncio's "never retrieved" warning)
+
+watchdog task: no progress for 30 s (paced) / 15 s (unpaced) -> failed,
+  stop_reason "watchdog". HONEST LIMIT: it is an asyncio task, so it cannot fire
+  while the loop is blocked by a SYNCHRONOUS spin -- that is the Layer-2 bound's
+  job (Decision 108). The event-loop-lag monitor in app.py records such a block
+  as soon as the loop is free again, so evidence survives either way.
+```
+
+### The frontend side
+
+```
+mount ─┬─ GET /v1/replay/status ─────────────► useReplayStatus ──┐
+       ├─ GET /v1/stream/recent ─┐                               │ run_id
+       ├─ EventSource /v1/stream ─┴─ queue+merge ► useEventStream(runId)
+       └─ GET /v1/incidents ─────────────────► useIncidents(runId)
+```
+
+`run_id` is the SINGLE reset signal: when it changes -- including to `null` on
+Reset -- `useEventStream` clears `events`, `lastUidRef`, `lastEventAt` and the
+seen-uid set and re-back-fills, and `useIncidents` refetches. No component
+clears itself, so no surface can be forgotten (AUDIT-015).
+
+On mount the stream is opened AND the back-fill fetched **concurrently**, with
+live frames queued until the back-fill resolves: opening after the fetch would
+drop everything in between, fetching after the open would duplicate it. The
+merge de-duplicates on `attempt_uid`, so the seam has neither a gap nor a repeat
+(AUDIT-009).
+
+Incidents come from `GET /v1/incidents`, with SSE only as a debounced
+accelerator -- the 200-event buffer is never the source, so D3 stays reachable
+for the whole life of an incident and after a refresh (AUDIT-008).
 
 ## 8. `python -m packages.simulator.generate` — the generation path
 

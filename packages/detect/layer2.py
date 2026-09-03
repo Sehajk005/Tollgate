@@ -30,6 +30,8 @@ PURE of I/O and wall clock; imports no `eval`, no label source.
 
 from __future__ import annotations
 
+import logging
+import math
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Set, Tuple
 
@@ -39,7 +41,44 @@ from packages.detect.drift import DriftParams, DriftStep, SequentialDrift
 from packages.detect.episode import DetectorSignal
 from packages.detect.policy import EntityKey
 
+logger = logging.getLogger("tollgate.detect.layer2")
+
 _DRIFT_ENTITY_TYPES = frozenset({"ip", "ipua"})
+
+# Source: remediation plan §11.5 (FIX-002) -- the TIME-DISCONTINUITY horizon,
+# in 10-second buckets. 17 280 buckets = 48 hours.
+#
+# Replay time and serving time are the SAME domain (plan F-B): a replay
+# launched with `epoch_ms: 0` produces bucket indices 0..1080, while a
+# `POST /v1/score` from the storefront uses the system clock and produces
+# ~1.756e8. A gap wider than this constant is not a gap in one timeline, it is
+# two unrelated timelines meeting -- and folding it bucket-by-bucket is the
+# ~175,600,000-iteration synchronous spin that wedged the scorer (AUDIT-006).
+#
+# WHY 17 280 AND NOT THE PLAN'S PROPOSED 8 640 (24 h). The plan required the
+# horizon to be MEASURED rather than assumed, and the measurement rejected
+# 8 640. Replaying all four tiers at seed 42 and recording the peak statistic
+# under the pessimistic assumption that EVERY attempt is tau_flag-gated:
+#
+#     tier      events   bucket span   peak S_t   empty buckets to floor
+#     easy         821          1076    948.195                    11 853
+#     medium       701          1076    753.776                     9 423
+#     hard         508          1076    437.316                     5 467
+#     evasive      390          1076    253.632                     3 171
+#
+# "empty buckets to floor" is ceil(S / decay_floor) with the PROVABLE decay
+# floor (rho - 1) * lambda_min = (5.0 - 1) * 0.02 = 0.08 per empty bucket --
+# the worst case over every hour-of-day volume profile. The worst tier needs
+# 11 853, so a 24-hour horizon could not carry the equivalence argument;
+# 48 hours does, with 1.46x margin. Re-measure before lowering it.
+#
+# Crossing the horizon is handled ANALYTICALLY rather than iteratively. See
+# `_empty_buckets_to_floor` for why that is answer-preserving and not a
+# mitigation -- and note that correctness does not actually depend on this
+# constant: the equivalence horizon is recomputed from the live parameters on
+# every crossing, and a statistic that outlives it is reset explicitly and
+# logged rather than silently approximated.
+MAX_CATCHUP_BUCKETS = 17_280
 
 
 @dataclass
@@ -116,19 +155,138 @@ class Layer2Engine:
             lambda_min=self._cp.lambda_min,
         )
 
+    def _commit_one(self, mc: "_MerchantCusum", bucket_index: int, n_t: int) -> None:
+        """Fold exactly one bucket and record the committed statistic. This is
+        the body the catch-up loop always had; it is a method now so the
+        discontinuity path can reuse it verbatim rather than reimplement it."""
+        bucket_start_ms = bucket_index * self._cp.bucket_s * 1000
+        lam0 = self._lambda0(bucket_start_ms)
+        step = mc.cusum.observe(bucket_index, n_t, lam0)
+        mc.committed_bucket = bucket_index
+        mc.committed_alarm = step.alarm
+        mc.committed_rate_ratio = step.rate_ratio
+
+    def _empty_buckets_to_floor(self, s: float) -> Optional[int]:
+        """How many consecutive EMPTY buckets provably pin S_t at exactly 0.0.
+
+        The one-sided Poisson CUSUM is
+
+            S_t = max(0, S_{t-1} + n_t*ln(lam1/lam0) - (lam1 - lam0))
+
+        so an empty bucket (n_t = 0) subtracts exactly (lam1 - lam0) and floors
+        at zero. lam1 = rho*lam0 and lam0 is floored at `lambda_min`, therefore
+        EVERY empty bucket removes at least
+
+            decay_floor = (rho - 1) * lambda_min
+
+        regardless of the hour-of-day volume profile. After
+        ceil(S / decay_floor) empty buckets S is exactly 0.0, and 0.0 is a fixed
+        point of the recursion -- every further empty bucket leaves it there.
+
+        That is why the bounded path is ANSWER-PRESERVING rather than a
+        mitigation: beyond this horizon the long fold and the short one produce
+        byte-identical (S, alarm, rate_ratio). The horizon is COMPUTED from the
+        live parameters, not assumed, so a future rho / lambda_min change cannot
+        silently invalidate the argument.
+
+        Returns None when the parameters make the CUSUM non-decaying
+        (rho <= 1 or lambda_min <= 0), i.e. when no such proof exists.
+        """
+        decay_floor = (float(self._cp.rho) - 1.0) * float(self._cp.lambda_min)
+        if decay_floor <= 0.0:
+            return None
+        return math.ceil(max(s, 0.0) / decay_floor)
+
+    def _commit_forward_discontinuity(
+        self, merchant_id: str, mc: "_MerchantCusum", target_bucket: int, gap: int
+    ) -> None:
+        # 1. The still-filling bucket is a REAL observation carrying a real
+        #    gated count. The unbounded fold committed it first; so does this.
+        self._commit_one(mc, mc.pending_bucket, mc.pending_n)
+        mc.pending_bucket += 1
+        mc.pending_n = 0
+
+        # 2. Every bucket between here and the target is empty. Fold only as
+        #    many as can still change the answer.
+        remaining = target_bucket - mc.pending_bucket
+        to_floor = self._empty_buckets_to_floor(mc.cusum.s)
+        provable = (
+            to_floor is not None
+            and to_floor <= remaining
+            and to_floor <= MAX_CATCHUP_BUCKETS
+        )
+        fold_n = to_floor if provable else min(remaining, MAX_CATCHUP_BUCKETS)
+        for _ in range(fold_n):
+            self._commit_one(mc, mc.pending_bucket, 0)
+            mc.pending_bucket += 1
+
+        if not provable and mc.cusum.s > 0.0:
+            # No equivalence proof available (a non-decaying parameterisation,
+            # or a statistic so large it outlives a full 24 h of decay). Reset
+            # rather than spin: an S_t carried across two unrelated time domains
+            # is not a meaningful statistic anyway.
+            mc.cusum.reset()
+
+        # 3. Land on the target by folding its immediately preceding bucket, so
+        #    `committed_bucket`, `committed_alarm`, `committed_rate_ratio` and
+        #    the CUSUM's own bucket cursor all match the long fold exactly.
+        if mc.pending_bucket < target_bucket:
+            self._commit_one(mc, target_bucket - 1, 0)
+            mc.pending_bucket = target_bucket
+        mc.pending_n = 0
+
+        logger.warning(
+            "layer2: bounded time discontinuity for merchant %s -- forward jump of "
+            "%d buckets (%.1f h) exceeds MAX_CATCHUP_BUCKETS=%d; folded %d bucket(s) "
+            "analytically%s. This is replay time and serving time meeting in one "
+            "engine (plan F-B); the statistic is equivalent, not approximated.",
+            merchant_id, gap, gap * self._cp.bucket_s / 3600.0, MAX_CATCHUP_BUCKETS,
+            fold_n, "" if provable else " and RESET (no equivalence proof)",
+        )
+
+    def _commit_backward_discontinuity(
+        self, merchant_id: str, mc: "_MerchantCusum", target_bucket: int, gap: int
+    ) -> None:
+        """A jump far BACKWARDS -- a wall-clock checkout followed by an epoch-0
+        replay. The old loop simply did not run, which cost nothing in CPU but
+        stranded `pending_bucket` ~1.756e8 buckets in the future: from then on
+        `observe()` never matched the live bucket, `pending_n` never
+        incremented, and Layer 2 silently never fired again for the rest of the
+        process. Silence is worse than a spin, not better."""
+        mc.cusum.reset()
+        mc.pending_bucket = target_bucket
+        mc.pending_n = 0
+        mc.committed_bucket = None
+        mc.committed_alarm = False
+        mc.committed_rate_ratio = 0.0
+        logger.warning(
+            "layer2: bounded time discontinuity for merchant %s -- backward jump of "
+            "%d buckets (%.1f h) exceeds MAX_CATCHUP_BUCKETS=%d; the CUSUM has been "
+            "reset to the new time domain rather than stranded in the old one.",
+            merchant_id, -gap, -gap * self._cp.bucket_s / 3600.0, MAX_CATCHUP_BUCKETS,
+        )
+
     def _commit_through(self, merchant_id: str, target_bucket: int) -> None:
         mc = self._merchant(merchant_id)
         if mc.pending_bucket is None:
             mc.pending_bucket = target_bucket
             mc.pending_n = 0
             return
+
+        # Source: remediation plan §11.5 (FIX-002). Inside the horizon this is
+        # byte-for-byte the loop Day 6 shipped -- a normal 3-hour replay spans
+        # 1 080 buckets, well under MAX_CATCHUP_BUCKETS, so ordinary operation
+        # never reaches either discontinuity branch.
+        gap = target_bucket - mc.pending_bucket
+        if gap > MAX_CATCHUP_BUCKETS:
+            self._commit_forward_discontinuity(merchant_id, mc, target_bucket, gap)
+            return
+        if gap < -MAX_CATCHUP_BUCKETS:
+            self._commit_backward_discontinuity(merchant_id, mc, target_bucket, gap)
+            return
+
         while mc.pending_bucket < target_bucket:
-            bucket_start_ms = mc.pending_bucket * self._cp.bucket_s * 1000
-            lam0 = self._lambda0(bucket_start_ms)
-            step = mc.cusum.observe(mc.pending_bucket, mc.pending_n, lam0)
-            mc.committed_bucket = mc.pending_bucket
-            mc.committed_alarm = step.alarm
-            mc.committed_rate_ratio = step.rate_ratio
+            self._commit_one(mc, mc.pending_bucket, mc.pending_n)
             mc.pending_bucket += 1
             mc.pending_n = 0
 

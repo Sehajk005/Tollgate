@@ -1,7 +1,11 @@
 """
-Source: Day-8 Plan Step 5 -- a Python source-contract test. D6 renders from
-the COMMITTED artifact with zero live computation (App Flow v2 SS5 D6:
-"Static render. No live computation on stage.").
+Source: Day-8 Plan Step 5, narrowed by METRICS-REMEDIATION-PLAN-2026-09-02.md
+§26.2 -- **architectural invariants only**.
+
+D6 is a static render (App Flow v2 SS5 D6: "Static render. No live computation
+on stage."). Two invariants survive here; everything that used to grep the JSX
+for rendered content is now a real React rendering test under
+`services/dashboard/src/` (FE-T-B1..B6, FE-T-GEOM, FE-T-CONTRACT, ...):
 
   * `D6Metrics.jsx` reaches `eval/outputs/d6.json` by a STATIC `import`, not a
     fetch;
@@ -35,24 +39,3 @@ class TestD6Static:
             src = f.read_text(encoding="utf-8")
             for token in BANNED:
                 assert token not in src, f"{f.name} contains a runtime data path: {token!r}"
-
-    def test_all_six_blocks_are_referenced(self):
-        src = D6.read_text(encoding="utf-8")
-        for block in (
-            "block1_per_tier",
-            "block2_negative_controls",
-            "block3_audit",
-            "block4_cost",
-            "block5_calibration",
-            "block6_baselines",
-        ):
-            assert block in src, f"D6Metrics.jsx does not render {block}"
-
-    def test_cost_curve_renders_both_regimes_both_optima_ribbon_and_gap(self):
-        src = (CHARTS / "CostCurve.jsx").read_text(encoding="utf-8")
-        assert "curve_pi0" in src and "curve_pi1" in src, "both prevalence regimes"
-        assert "f1_optimal" in src and "cost_optimal" in src, "both optima markers"
-        assert "ribbon" in src, "the sensitivity ribbon"
-        assert "rupee_gap_minor" in src, "the rupee gap"
-        # both pi values printed on the axis label, not hunted for in a caption
-        assert "π₀" in src and "π₁" in src
