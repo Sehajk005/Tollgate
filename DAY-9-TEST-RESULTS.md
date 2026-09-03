@@ -238,3 +238,31 @@ Full detail: `evidence/day-9/phase-6-security.md` · harness + results:
 defect. R-5 items (`/v1/stream` unauth, outcome features `0.0`) reconfirmed as
 documented known limitations. One hardening note (no body-size cap; token-bucket
 is the volume mitigation).
+
+## Phase 7 — Reliability / Failure Injection
+
+Full detail: `evidence/day-9/phase-7-reliability.md`. Six infrastructure faults
+injected against the running Compose stack; each answers *fails safely · UI truth
+· recover · data preserved · demo continues*.
+
+| # | Fault | Result |
+|---|---|---|
+| 1 | Redis killed mid-scoring | ✅ 5 scores → 200 `allow` `fail_open:window_store`, **never 5xx**; `/healthz` 200; SSE `fail_open:true` frames |
+| 1b | Redis restarted | ✅ scorer **auto-recovers, no restart** — `degraded_reason:null`, window counting again |
+| 2 | Scorer restarted (SIGTERM) | ✅ healthy 8 s; drainer resumes from persisted byte offset (no re-drain); `attempt_score` 6767→6767; replay `idle` not stuck |
+| 3 | Scorer SIGKILL mid-replay | ✅ post-kill replay `idle`/`run_id:null`/`terminal:true`/`error:null` — no phantom `running`; scored events survived; fresh launch works, no manual intervention |
+| 4 | SSE drop → polling contract | ✅ `/v1/stream/recent?after=<uid>` strictly-after, in-order; `: ping` flush on subscribe |
+| 5 | SQLite `BEGIN EXCLUSIVE` held 4 s | ✅ `/v1/incidents` 200 (WAL read), `/v1/score` 200 (writes spool not SQLite), `drainer_failures:0` — scoring decoupled from DB contention |
+| 6 | Redis unavailable at startup | ✅ `ERROR … falling back to InMemoryWindowStore` (explicit); scores 200 via real in-mem window path (not fail-open); restore → `RedisWindowStore` |
+
+Cross-referenced: reset/stop during replay → Phase 8; browser refresh / SSE→poll→SSE
+in-browser → Phase 11; dup event / malformed / bad key → Phase 4; Gemini faults →
+`test_narrator_*` (23 passed), narrator is out-of-band (Decision 98).
+
+Background-task exceptions surfaced not swallowed (AUDIT-007); drainer never
+wedged (`drainer_failures:0` throughout); `/healthz` always responsive (no CPU
+loop); no corrupted state after all faults + restores (5/5 services healthy,
+reset → `idle` + full `cleared` map).
+
+**Phase 7 verdict: GREEN.** No new defects. Two hardening observations (InMemory
+fallback logs a full traceback; spool grows unbounded — `down -v` resets it).
