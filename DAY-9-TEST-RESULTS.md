@@ -170,3 +170,32 @@ Full detail: `evidence/day-9/phase-3-j6-6-8.md`.
 | Step 6 (co-tenant) demonstrated | ✅ | `GET /v1/demo/cotenant-ip` → `198.51.100.249` (real attacker IP); co-tenant checkout via the storefront proxy → `auth_attempt.ip = 198.51.100.249`, decision `allow` (not blocked) |
 | Controls inert without `TOLLGATE_DEMO_CONTROLS` | ✅ | all `/v1/demo/*` → 404; the fault flag alone (no env) does not change `/v1/score`; UI groups render only with `VITE_TOLLGATE_DEMO_CONTROLS=1` |
 | S-3 (any control faking a decision/tier/availability state) | **not triggered** | every control drives a real path; source-level test asserts the flood never sets `shed` directly |
+
+---
+
+---
+
+# SESSION 2 (Phases 4–11)
+
+Machine / stack unchanged. QA phases run against the **Docker Compose stack** (the
+judge's path) unless noted. Stack: 5 services healthy; scorer `RedisWindowStore`,
+Layer 1 + Layer 2 (`policy v2, cusum_h=318.133`), `TOLLGATE_DEMO_CONTROLS=1`.
+
+## Phase 4 — Backend / API QA
+
+Full detail: `evidence/day-9/phase-4-api-qa.md` · harness + raw results:
+`evidence/day-9/phase-4-api-qa-harness.py` / `phase-4-api-qa-results.json`.
+
+| Suite / check | Command | Result | Notes |
+|---|---|---|---|
+| API route matrix (every `services/scorer` route × happy/auth/malformed/oversized/missing/wrong-type/dup-`event_id`/diff-payload/concurrent/wrong-method/unknown-route) | `phase-4-api-qa-harness.py` | ✅ **66 / 66 PASS** | 0 FAIL. Every route enforces its auth boundary; every 4xx is operator-readable (`{"detail": "…"}` or a pydantic `loc` list); no raw stack trace, no unmapped 500. |
+| `/v1/score` idempotency (`sha256(merchant\|event_id\|payload_digest)`) | live + DB | ✅ | dup identical → same `attempt_uid` (1 `auth_attempt` row); same `event_id` + changed payload → new `attempt_uid` (by design, Threat Model §3); 10× concurrent identical → **1** distinct uid, 1 row |
+| `/v1/replay/*` lifecycle (start 202 / 409-busy / stop true-terminal / reset 200+`cleared`) | live | ✅ | `stop` returns `stopped` not stale `running`; `reset` `cleared` map + `degraded:false`; rejected call leaves state untouched |
+| `/v1/replay/start` unknown `tier` | live | ⚠️ | **202** then async `KeyError` → `failed` (terminal, recoverable). **DEF-D9-005 (P3)** — boundary should 422. Not on the demo path. |
+| `/v1/incidents?state=` filter | live + source | ⚠️ | param declared + documented, **never applied**. **DEF-D9-006 (P3)** — dead parameter, no functional impact. |
+| `/v1/outcome` wire outcomes (401 unsigned / stale / bad-sig, 422 extra/missing) | live | ✅ | happy + 404 + 409 + 503 covered by `test_outcome_hmac.py` (green) and Phase 6 |
+| `/v1/demo/*` (gate ON) auth + validation + fault→fail-open | live | ✅ | `fault:true` → `/v1/score` 200 `allow` never 5xx; restored to OFF; gate-OFF 404 behaviour covered by `test_demo_*` (green) + Phase 6 |
+| oversized body (~4 MB) | live | ⚠️ obs | 200, no cap, ~0.4 s — no 500/hang. Phase 6 DoS-surface note. |
+
+**Phase 4 verdict: GREEN.** No P0/P1/P2. Two P3 defects (DEF-D9-005, DEF-D9-006),
+both Phase-13 candidates, neither on the demo path.

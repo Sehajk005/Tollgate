@@ -13,6 +13,8 @@ reproduces** (Plan §8, §9). A patch alone is not "fixed".
 | DEF-D9-002 | P3 | 1 | `services/scorer/app.py` logging config | README manual-path startup does not surface `tollgate.scorer` INFO lines (Redis / model / Layer-2 status) — only `uvicorn*` loggers are configured by `--log-level` | **FIXED (Phase 2)** — Compose scorer runs uvicorn with `--log-config deploy/uvicorn-logging.json`; the Layer-2 line is visible in the container log. Manual path unchanged (still applies there — reopen as P3 if manual-path observability is required). |
 | DEF-D9-003 | P2 | 2 | `data/corpus/tollgate.db` (reference corpus) | Phase-2 bootstrap (before the corpus-working-copy guard) ran `learn_store_baseline` + `tune_cusum` against the bind-mounted reference corpus, bumping `store_baseline.updated_at` on 8 rows + appending 20 `policy_config` rows (since deleted). Corpus SHA no longer matches `eval/outputs/d6.json.provenance.corpus_db_sha256` → `test_d6_provenance::test_corpus_identity_is_recorded_and_matches_the_real_corpus` FAILS. | OPEN — **Phase 5 prerequisite** (regenerate `d6.json` provenance, or restore a pristine corpus). Recurrence prevented: bootstrap now copies the corpus to the volume first. |
 | DEF-D9-004 | P3 | 3 | `services/scorer/demo.py` `DemoFloodRunner` + scorer throughput | The J6 step-7 flood exercises the real `AdmissionController` path but, on this single-worker dev scorer (~50 ms/request, DEF-D9-001), only marginally exceeds the 50/s admission refill: the 200-token bucket takes ~15 s of sustained concurrent load to empty and then sheds *intermittently*, not continuously. Fine for a "watch it degrade" demo beat; not the crisp instant-shed the ~3-min J6 budget wants. | OPEN — Phase 13 (raise flood concurrency) or Phase 10 (per-request cost). The shed rung itself is fully proven by `test_admission_shed.py`; not a correctness defect. |
+| DEF-D9-005 | P3 | 4 | `services/scorer/routes_replay.py` `ReplayStartBody.tier` | `POST /v1/replay/start {"tier":"no-such-tier"}` → **202** `state=starting`, then the async replay task raises `KeyError: 'no-such-tier'` in `build_stream` (`packages/simulator/generate.py:83`) and the driver transitions to `failed` with `error="KeyError: 'no-such-tier'"`, `terminal=true`. The failure is captured (AUDIT-007 behaviour), terminal, and recoverable via `reset` — but the API boundary accepts an out-of-set value and surfaces a raw `KeyError` repr instead of a validated 422. | OPEN — Phase 13. Not on the demo path (the DC strip only sends `TIER_OPTIONS`). Fix: constrain `tier` to `{easy,medium,hard,evasive}` at the boundary. |
+| DEF-D9-006 | P3 | 4 | `services/scorer/routes_incidents.py::list_incidents` | `GET /v1/incidents?state=<x>` declares + documents a `state` filter (`?state=live`) that is **never applied** — `list_incidents(state="live", …)` does not forward `state` and `read_open_incidents(conn, merchant_id)` hard-codes `WHERE state != 'CLOSED'` (`packages/storage/repository.py:335`). `?state=live`, `?state=closed`, `?state=bogus` return identical results. | OPEN — Phase 13. No functional impact (the dashboard only sends the default; live incidents are returned correctly). Fix: honour the param or drop it from the signature + docstring. |
 
 ---
 
@@ -73,3 +75,43 @@ reproduces** (Plan §8, §9). A patch alone is not "fixed".
 | **Fix status** | **Recurrence prevented** — `scripts/compose_bootstrap.py::ensure_corpus_working_copy()` now `shutil.copy2`s the corpus to `/data/corpus.db` on the volume and runs learn/tune against that copy; `data/corpus/tollgate.db` is never written under Compose (verified: `SELECT COUNT(*),MAX(version) FROM policy_config` = `(156, 8)` before and after a clean `down -v && up`). **The drift itself is NOT restored** — no pristine copy exists (corpus is gitignored, never tracked; `updated_at` is non-deterministic). |
 | **Remediation (Phase 5, later session)** | Phase 5 re-derives `d6.json` via `eval.harness` to a scratch dir and `diff_d6.py`s it. Either (a) accept the regenerated provenance (records the current corpus SHA) after a reviewed diff shows 0 substantive metric differences, or (b) rebuild a pristine corpus (`eval.corpus.replay_corpus` — deterministic on seed 42 — then `learn_store_baseline` + `tune_cusum`) and regenerate `d6.json` against it. **Hard prerequisite for the Phase 5 gate.** |
 | **Residual risk** | Low. The corpus is self-consistent and its attack/negative data (seed-42 deterministic) is untouched; only baseline metadata drifted. A metric-level diff in Phase 5 will confirm zero substantive change. |
+
+---
+
+## DEF-D9-005 — `POST /v1/replay/start` accepts an unknown `tier`
+
+| Field | Detail |
+|---|---|
+| **Severity** | P3 |
+| **Category** | Input validation / operator-readability |
+| **Phase found** | 4 (Backend / API QA) |
+| **Component** | `services/scorer/routes_replay.py` — `ReplayStartBody.tier: str` (unconstrained) |
+| **Repro** | `curl -XPOST :8080/v1/replay/start -H "X-Tollgate-Key: <key>" -d '{"tier":"no-such-tier"}'` |
+| **Expected** | `422 {"detail":"unknown tier '…'"}` at the boundary — `tier` is a closed set (`easy\|medium\|hard\|evasive`, `config/attack_tiers.yaml`). |
+| **Actual** | `202 Accepted`, `state=starting`; ~90 ms later the async task raises `KeyError: 'no-such-tier'` (`packages/simulator/generate.py:83`, `attack_tiers[tier]`) → `_on_replay_task_done` / `run()` catch it → `state=failed`, `error="KeyError: 'no-such-tier'"`, `terminal=true`. Recoverable via `POST /v1/replay/reset`. |
+| **Root cause** | No allow-list validation on `ReplayStartBody.tier`; an out-of-set value is only caught deep in the replay task as a raw `KeyError`. |
+| **Functional impact** | None on the demo path — `DemoControlStrip` only sends a tier from `TIER_OPTIONS`. The failure is captured honestly (this is the AUDIT-007 fix working), never wedges, never a 5xx. |
+| **Evidence** | `evidence/day-9/phase-4-api-qa.md` §1–2; scorer log `ERROR tollgate.scorer.replay  replay: run failed at 0/0` + `KeyError: 'no-such-tier'` traceback. |
+| **Fix status** | Not attempted. Phase 13 candidate — a `tier` enum / allow-list check in `replay_start` returning `422`. |
+| **Verification method (when actioned)** | `POST /v1/replay/start {"tier":"bogus"}` → `422` with an operator-readable detail; `state` stays `idle`; the four real tiers still `202`. |
+| **Residual risk** | Negligible for the demo. |
+
+---
+
+## DEF-D9-006 — `GET /v1/incidents?state=` is a dead parameter
+
+| Field | Detail |
+|---|---|
+| **Severity** | P3 |
+| **Category** | API surface accuracy (dead parameter) |
+| **Phase found** | 4 (Backend / API QA) |
+| **Component** | `services/scorer/routes_incidents.py::list_incidents` + `packages/storage/repository.py::read_open_incidents` |
+| **Repro** | `GET :8080/v1/incidents?state=closed` vs `?state=live` vs `?state=bogus` (all with a valid key) |
+| **Expected** | Either the `state` filter changes the result set, or the parameter is not advertised. The route docstring says `GET /v1/incidents?state=live -- newest live incident ids`. |
+| **Actual** | All three return the identical list. `list_incidents(state: str = "live", …)` never passes `state` onward; `read_open_incidents(conn, merchant_id)` hard-codes `WHERE state != 'CLOSED' ORDER BY opened_at DESC` (`repository.py:335-347`). |
+| **Root cause** | The `state` query parameter was declared (and documented) but never wired through. |
+| **Functional impact** | None. The dashboard's `useIncidents` hook only ever requests the default; live (non-CLOSED) incidents are returned correctly. A caller expecting `?state=closed` to work would be silently misled. |
+| **Evidence** | `evidence/day-9/phase-4-api-qa.md` §1–2; source read `routes_incidents.py:73-85`, `repository.py:335-347`. |
+| **Fix status** | Not attempted. Phase 13 candidate — honour the param (`state in {live, closed, all}`) or remove it from the signature + docstring. |
+| **Verification method (when actioned)** | `?state=closed` returns only CLOSED incidents (or the param is gone and the docstring no longer mentions it). |
+| **Residual risk** | Negligible. |
