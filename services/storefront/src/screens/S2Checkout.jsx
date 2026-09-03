@@ -219,7 +219,7 @@ export default function S2Checkout({ demo, onRoute }) {
       )}
 
       <button
-        onClick={pay}
+        onClick={() => pay()}
         disabled={submitting}
         style={{
           marginTop: 20,
