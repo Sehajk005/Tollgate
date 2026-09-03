@@ -11,6 +11,14 @@ import { resolveClientOutcome, screenForOutcome } from "../lib/outcome.js";
 // a tier badge that INCLUDES `shed` and `fail_open` -- the two states a judge
 // asks about. Both demo-gated; the default checkout shows neither.
 //
+// Day 9 Plan Phase 3 step 6 -- `?demo=1` also gains a "Checkout as CGNAT
+// co-tenant" button: it GETs /v1/demo/cotenant-ip (one IP currently under
+// enforcement) then re-runs the checkout tagged so the Vite proxy -- the
+// declared trusted edge -- stamps X-Forwarded-For with that IP (the browser
+// cannot set XFF itself). The customer then hits the REAL (ip, ua_class)
+// entity and the REAL challenge auto-ceiling: one checkbox, order goes
+// through. Nothing about the decision is special-cased.
+//
 // Remediation plan FIX-021 (AUDIT-019) -- THE CARD FIELDS ARE REAL NOW. The
 // inputs were uncontrolled `defaultValue`s that nothing ever read: `pay()` sent
 // a RANDOM `card_hash` and a hardcoded `bin: "999001"` on every submit. So the
@@ -85,10 +93,11 @@ export default function S2Checkout({ demo, onRoute }) {
   const [expiry, setExpiry] = useState("04 / 28");
   const [cvv, setCvv] = useState("123");
   const [validationError, setValidationError] = useState(null);
+  const [cotenantIp, setCotenantIp] = useState(null);
 
   const digits = useMemo(() => digitsOf(pan), [pan]);
 
-  async function pay() {
+  async function pay(extraHeaders = {}) {
     const problem = validateCard(pan, expiry);
     if (problem) {
       setValidationError(problem);
@@ -109,7 +118,11 @@ export default function S2Checkout({ demo, onRoute }) {
       const cardHash = await sha256Hex(digits);
       const resp = await fetch("/v1/score", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-Tollgate-Key": API_KEY },
+        headers: {
+          "Content-Type": "application/json",
+          "X-Tollgate-Key": API_KEY,
+          ...extraHeaders,
+        },
         body: JSON.stringify({
           event_id: `evt-${Date.now()}-${Math.random().toString(36).slice(2)}`,
           card_hash: cardHash,
@@ -132,6 +145,31 @@ export default function S2Checkout({ demo, onRoute }) {
     setOutcome(co);
     setSubmitting(false);
     onRoute(screenForOutcome(co), co);
+  }
+
+  // Day 9 Plan Phase 3 step 6 -- the CGNAT co-tenant checkout.
+  async function payAsCotenant() {
+    setValidationError(null);
+    let ip = null;
+    try {
+      const r = await fetch("/v1/demo/cotenant-ip", { headers: { "X-Tollgate-Key": API_KEY } });
+      if (!r.ok) {
+        setValidationError(
+          r.status === 404
+            ? "No IP is under enforcement yet — run the attack replay first."
+            : `Co-tenant lookup failed (HTTP ${r.status}).`
+        );
+        return;
+      }
+      ip = (await r.json()).ip;
+    } catch (err) {
+      setValidationError("Cannot reach the scorer.");
+      return;
+    }
+    setCotenantIp(ip);
+    // The Vite proxy (the declared trusted edge) turns this into
+    // X-Forwarded-For: <ip>; the browser is not allowed to set XFF itself.
+    await pay({ "x-tg-demo-xff": ip });
   }
 
   return (
@@ -205,6 +243,32 @@ export default function S2Checkout({ demo, onRoute }) {
           <span>tier: {outcome || "—"}</span>
           {" · "}
           <span>bin: {digits.slice(0, 6) || "—"} &middot; last4: {digits.slice(-4) || "—"}</span>
+          {cotenantIp && (
+            <>
+              {" · "}
+              <span>via co-tenant IP: {cotenantIp}</span>
+            </>
+          )}
+          <div style={{ marginTop: 10 }}>
+            <button
+              type="button"
+              onClick={payAsCotenant}
+              disabled={submitting}
+              style={{
+                border: "1px solid var(--st-hairline)",
+                borderRadius: 6,
+                padding: "6px 12px",
+                background: "transparent",
+                color: "var(--st-ink-2)",
+                cursor: submitting ? "default" : "pointer",
+                fontFamily: "inherit",
+                fontSize: 12,
+              }}
+              title="DEMO: fetch an IP currently under enforcement, then check out from it. The proxy stamps X-Forwarded-For; real entity resolution, real challenge ceiling."
+            >
+              Checkout as CGNAT co-tenant
+            </button>
+          </div>
         </div>
       )}
     </div>

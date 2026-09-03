@@ -23,6 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from packages.config.env import load_env_file, validate_startup
 from services.scorer.deps import ScorerState
+from services.scorer.routes_demo import router as demo_router
 from services.scorer.routes_incidents import router as incidents_router
 from services.scorer.routes_outcome import router as outcome_router
 from services.scorer.routes_replay import router as replay_router
@@ -106,6 +107,13 @@ def create_app(state: Optional[ScorerState] = None) -> FastAPI:
             yield
         finally:
             lag_task.cancel()
+            # Day 9 Plan Phase 3 -- stop a running demo flood load generator.
+            flood = getattr(active_state, "demo_flood", None)
+            if flood is not None and getattr(flood, "running", False):
+                try:
+                    await flood.stop()
+                except Exception:  # noqa: BLE001
+                    pass
             # Let any out-of-band Gemini narration tasks finish and spool
             # their narrator_call row before the spool is closed. Bounded
             # (~2x the call timeout) so a hung call cannot block shutdown;
@@ -141,6 +149,9 @@ def create_app(state: Optional[ScorerState] = None) -> FastAPI:
     app.include_router(score_router)
     app.include_router(stream_router)
     app.include_router(replay_router)
+    # Day 9 Plan Phase 3 -- J6 steps 6-8. Every route 404s unless
+    # TOLLGATE_DEMO_CONTROLS=1, so it is inert in production.
+    app.include_router(demo_router)
     # Day-8 Plan Step 6 -- the D3 incident read model + confirm / resolve.
     app.include_router(incidents_router)
     # Day-7 Plan §4 Step 5 -- POST /v1/outcome. Self-guards: without

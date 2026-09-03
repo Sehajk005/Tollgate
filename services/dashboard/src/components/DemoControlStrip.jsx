@@ -3,9 +3,16 @@ import { isTerminal } from "../hooks/useReplayStatus.js";
 
 // Day 8, Step 3 -- the demo control strip (UIUX v2 SS6.12), pinned bottom,
 // 1px top hairline. All four tiers, Launch / Stop / Reset, a speed selector,
-// the pace-from-episode checkbox, and the permanent virtual-clock chip. The
-// negative-control selector and flood / kill-scorer toggles remain omitted
-// (Day 9).
+// the pace-from-episode checkbox, and the permanent virtual-clock chip.
+//
+// Day 9 Plan Phase 3 -- J6 steps 7 & 8. FLOOD and KILL SCORER toggles are
+// added, in a visually separated group labelled "DEMO", rendered only when
+// VITE_TOLLGATE_DEMO_CONTROLS=1 (the Compose stack sets it). Both call
+// /v1/demo/*, which 404s on the backend unless TOLLGATE_DEMO_CONTROLS=1 -- so
+// in production the group is absent AND inert. Neither toggle fakes a state:
+// FLOOD starts a real concurrent /v1/score load that drains the token bucket;
+// KILL SCORER flips the in-scorer fault injector so /v1/score fails OPEN for
+// real. The negative-control selector remains omitted.
 //
 // Remediation plan FIX-012 / FIX-022 / FIX-023 (AUDIT-013, 022, 024):
 //
@@ -30,6 +37,10 @@ const TIER_OPTIONS = [
 ];
 
 const API_KEY = import.meta.env.VITE_TOLLGATE_API_KEY || "";
+
+// Day 9 Plan Phase 3 -- the demo-controls group renders only when this is set.
+// The backend /v1/demo/* routes are independently gated by TOLLGATE_DEMO_CONTROLS.
+const DEMO_CONTROLS = import.meta.env.VITE_TOLLGATE_DEMO_CONTROLS === "1";
 
 // Remediation plan FIX-023 (AUDIT-022) -- App Flow §8's voice: say what
 // happened and what to do, never a status code on its own.
@@ -85,6 +96,8 @@ export default function DemoControlStrip({ replayStatus, onReplayStatus }) {
   const [actionError, setActionError] = useState(null);
   const [clearedNote, setClearedNote] = useState(null);
   const [inFlight, setInFlight] = useState(false);
+  const [flooding, setFlooding] = useState(false);
+  const [faulting, setFaulting] = useState(false);
   const errorTimer = useRef(null);
 
   const terminal = isTerminal(replayStatus);
@@ -155,6 +168,38 @@ export default function DemoControlStrip({ replayStatus, onReplayStatus }) {
       if (data && onReplayStatus) onReplayStatus(data);
     } catch (err) {
       raise(NETWORK_ERROR);
+    } finally {
+      setInFlight(false);
+    }
+  }
+
+  // Day 9 Plan Phase 3 -- flip a real demo control. Same error handling as
+  // callReplay (never JSON.stringify(null); server `detail` preferred).
+  async function callDemo(path, want) {
+    setInFlight(true);
+    try {
+      const resp = await fetch(`/v1/demo/${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Tollgate-Key": API_KEY },
+        body: JSON.stringify({ enabled: want }),
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok) {
+        const detail = data && typeof data.detail === "string" ? data.detail : null;
+        const mapped = ERROR_COPY[resp.status];
+        const message =
+          mapped && ACTIONABLE_STATUSES.has(resp.status)
+            ? mapped
+            : detail || mapped || "The scorer rejected the request";
+        raise(`${message} (HTTP ${resp.status})`);
+        return false;
+      }
+      setActionError(null);
+      if (errorTimer.current != null) clearTimeout(errorTimer.current);
+      return true;
+    } catch (err) {
+      raise(NETWORK_ERROR);
+      return false;
     } finally {
       setInFlight(false);
     }
@@ -266,6 +311,50 @@ export default function DemoControlStrip({ replayStatus, onReplayStatus }) {
       )}
       {actionError && (
         <span role="alert" style={{ color: "var(--tg-attack)" }}>{actionError}</span>
+      )}
+
+      {DEMO_CONTROLS && (
+        <span
+          data-testid="demo-controls"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 8,
+            paddingLeft: 12,
+            marginLeft: 4,
+            borderLeft: "1px solid var(--tg-hairline-firm)",
+          }}
+        >
+          <span className="tg-mono-caption" style={{ color: "var(--tg-text-mute)" }}>
+            DEMO
+          </span>
+          <button
+            type="button"
+            onClick={async () => {
+              const want = !flooding;
+              if (await callDemo("flood", want)) setFlooding(want);
+            }}
+            disabled={inFlight}
+            aria-pressed={flooding}
+            title="Start a real concurrent /v1/score load. Drains the merchant token bucket -> the rules-only shed rung."
+            style={buttonStyle(flooding ? "primary" : "secondary", inFlight)}
+          >
+            {flooding ? "Flood: ON" : "Flood"}
+          </button>
+          <button
+            type="button"
+            onClick={async () => {
+              const want = !faulting;
+              if (await callDemo("fault", want)) setFaulting(want);
+            }}
+            disabled={inFlight}
+            aria-pressed={faulting}
+            title="Flip the in-scorer fault injector. /v1/score then fails OPEN (allow) for real."
+            style={buttonStyle(faulting ? "primary" : "secondary", inFlight)}
+          >
+            {faulting ? "Kill scorer: ON" : "Kill scorer"}
+          </button>
+        </span>
       )}
     </div>
   );

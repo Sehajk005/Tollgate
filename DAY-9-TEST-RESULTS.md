@@ -153,4 +153,20 @@ intact).
 
 ---
 
-_Phase 3 gate results appended below as they complete._
+---
+
+## Phase 3 — J6 steps 6–8 exit gate
+
+Full detail: `evidence/day-9/phase-3-j6-6-8.md`.
+
+| Suite / check | Result | Notes |
+|---|---|---|
+| New acceptance tests `test_demo_{fault,cotenant_ip,flood}.py` | ✅ **19 passed** | 6 + 8 + 5 |
+| Full `pytest tests/ -q` after Phase 3 | ⚠️ **637 passed / 1 failed / 2 xfailed** | the 1 failure = **DEF-D9-003** (Phase-2 corpus drift). `test_durability` flaked once under machine load in a background run; **passes clean in isolation** (`1 passed in 13.32 s`). |
+| `vitest run` | ✅ 205 passed / 21 files | DC-strip toggle changes — no regression |
+| `playwright test` | ✅ 68 (67 + 1) | one D6-layout test (`no metric-row label overlaps its bar track`) flaked under 4-worker + Docker contention; **4/4 pass isolated**. Unrelated to Phase 3 (dashboard `#/metrics`, not the demo strip). |
+| Step 8 (fault) demonstrated | ✅ | `fault:true` → `/v1/score` = 200 `allow` (never 5xx), `degraded_reason: fail_open:model`; off → full path restored |
+| Step 7 (flood) demonstrated | ⚠️ | real `AdmissionController` path: flood `shed_responses: 155`, `X-Tollgate-Shed: 1` observed after ~16 s sustained; **DEF-D9-004** (P3) — marginal/slow on the dev scorer |
+| Step 6 (co-tenant) demonstrated | ✅ | `GET /v1/demo/cotenant-ip` → `198.51.100.249` (real attacker IP); co-tenant checkout via the storefront proxy → `auth_attempt.ip = 198.51.100.249`, decision `allow` (not blocked) |
+| Controls inert without `TOLLGATE_DEMO_CONTROLS` | ✅ | all `/v1/demo/*` → 404; the fault flag alone (no env) does not change `/v1/score`; UI groups render only with `VITE_TOLLGATE_DEMO_CONTROLS=1` |
+| S-3 (any control faking a decision/tier/availability state) | **not triggered** | every control drives a real path; source-level test asserts the flood never sets `shed` directly |

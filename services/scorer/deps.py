@@ -138,6 +138,14 @@ class ScorerState:
     # ScorerState(...) construction is unaffected.
     gemini_tasks: set = field(default_factory=set)
     gemini_transport: object = None
+    # Source: Day 9 Plan Phase 3 -- J6 steps 7 & 8 demo controls. Both inert by
+    # default and only reachable via routes_demo.py, which itself 404s unless
+    # TOLLGATE_DEMO_CONTROLS=1. `demo_fault` True -> the /v1/score handler
+    # raises before score_attempt(), driving the real _fail_open path.
+    # `demo_flood` holds the running DemoFloodRunner (a real concurrent load
+    # against /v1/score), None when idle.
+    demo_fault: bool = False
+    demo_flood: object = None
 
     def db_read_conn(self):
         return connect(self.db_path)

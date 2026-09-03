@@ -121,6 +121,9 @@ services:
       # Mutable demo DB + spool on the Linux-native volume (see `volumes:`).
       TOLLGATE_DB_PATH: /data/tollgate.db
       TOLLGATE_SPOOL_DIR: /data/spool
+      # Day 9 Plan Phase 3 -- J6 steps 6-8. Enables the /v1/demo/* routes and
+      # the in-scorer fault injector. Default OFF everywhere else.
+      TOLLGATE_DEMO_CONTROLS: "1"
       PYTHONUNBUFFERED: "1"
     volumes:
       - ./:/repo
@@ -152,6 +155,10 @@ services:
       - "5173:5173"
     environment:
       TOLLGATE_SCORER_URL: http://scorer:8080
+      # Day 9 Plan Phase 3 step 6 -- lets the Vite proxy promote the demo
+      # `x-tg-demo-xff` header to X-Forwarded-For (the co-tenant checkout).
+      TOLLGATE_DEMO_CONTROLS: "1"
+      VITE_TOLLGATE_DEMO_CONTROLS: "1"
     volumes:
       - ./:/repo
       - storefront_node_modules:/repo/services/storefront/node_modules
@@ -179,6 +186,9 @@ services:
       - "5174:5174"
     environment:
       TOLLGATE_SCORER_URL: http://scorer:8080
+      # Day 9 Plan Phase 3 -- renders the FLOOD / KILL SCORER toggles in the
+      # demo control strip (the backend /v1/demo/* routes are gated separately).
+      VITE_TOLLGATE_DEMO_CONTROLS: "1"
     volumes:
       - ./:/repo
       - dashboard_node_modules:/repo/services/dashboard/node_modules
