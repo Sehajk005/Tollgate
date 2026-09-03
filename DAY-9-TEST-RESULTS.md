@@ -287,3 +287,28 @@ speed) and **DEF-D9-008** (`reset` closes incidents but does not release their
 persisted `enforcement_action` rows — demo unaffected because the current run's
 enforcement sorts first). Both one-line Phase-13 fixes. AUDIT-017 fix verified at
 source (tile reads a server field, not the 200-cap buffer).
+
+## Phase 10 — Performance QA
+
+Full detail: `evidence/day-9/phase-10-performance.md` · `phase-10-latency-*` ·
+`phase-10-verify60x-*.json`.
+
+| Gate / measure | Command | Result | Notes |
+|---|---|---|---|
+| **`/v1/score` p99 (compute)** | `phase-10-latency-harness.py` | ✅ **MET** | sequential **12 ms**, 10-concurrent **17 ms**, burst **59 ms** — all < the TRD 100 ms budget. Fail-open rung p99 10 ms (faster). round-trip p50 ~55 ms (Windows loopback). |
+| `verify_60x --gate throughput` (clean VM) | `--gate throughput --redis …/9` | ⚠️ **FAIL (speed only)** | **20/20 finished, all 821/821**, `identical_event_counts`=[821], `no_run_was_swallowed`/`attempt_score_row_parity`/`redis_returns_to_floor`/`drainer` all PASS, `rss_growth` −0.4 MB, `loop_lag`=[]. FAIL: `each_under_5s` (2–3/20 > 5 s), `throughput_ok` (mean ~305 aps) → **DEF-D9-001**. Root cause: serial-HTTP-loop assumption, not a serving inefficiency. **Not a demo blocker.** |
+| `verify_60x --gate 60x --faulthandler` (clean VM) | | ✅ **PASS 9/9** (406 s) | `no_crash` (no SIGSEGV), `health_p99` 16.9 ms, `loop_lag` 0.0 s, `rss_growth` −2.9 MB, `checkout_interleaved` ✓ — **AUDIT-006 + AUDIT-012** |
+| `verify_60x --gate crossing` (clean VM) | | ✅ **PASS** (112 s) | 5 reps × both orders, bounded discontinuity, no spin — **AUDIT-006** |
+| Actual 60× factor | Phase 8 easy/60/nopace 183 s | ✅ **≈ 59×** | consistent with prior audit 58.5×; known machine limitation, not demo-affecting |
+| Memory (soaks) | verify_60x | ✅ **no leak** | `rss_growth` −0.4 / −2.9 MB over 20-run + 3-run soaks |
+| LLM off the scoring path | env + `narrator_call` | ✅ | `NARRATOR_BACKEND=template`, `narrator_call`=0, Decision 98 out-of-band |
+| Availability rungs | latency harness | ✅ | full 12 ms → fail-open 10 ms (faster). Shed rung marginal on dev scorer (**DEF-D9-004**, proven by `test_admission_shed`). |
+
+**Environment note:** the same `--gate throughput` under Docker-VM memory pressure
+(full stack up, or a ~6 h session) produced 7 FAILs incl. 3/20 runs `failed` on
+`TimeoutError: Timeout reading from socket` — `compose down` + fresh redis fully
+restored the clean result. Classified **environment**, not a regression.
+
+**Phase 10 verdict: GREEN** (TRD p99 met; 60×/crossing/faulthandler pass; no leak;
+LLM off-path). DEF-D9-001 stays P2 (Decisions.md re-scope, Phase 13); DEF-D9-004
+stays P3. No new numbered defects.
