@@ -215,3 +215,26 @@ Full detail: `evidence/day-9/phase-5-detection-eval.md` · `phase-5-diff_d6.txt`
 **Phase 5 verdict: GREEN — release gate PASSES.** No new defects. DEF-D9-003
 remains OPEN as a P2 documented known limitation (does not block the gate; the
 gate's requirement — "0 substantive differences, `d6.json` SHA unchanged" — is met).
+
+## Phase 6 — Security QA (S-5 armed)
+
+Full detail: `evidence/day-9/phase-6-security.md` · harness + results:
+`phase-6-security-harness.py` / `phase-6-security-results.json`.
+
+| Suite / check | Command | Result | Notes |
+|---|---|---|---|
+| **S-5 stop condition** (client data → feature / model / decision / identity) | `phase-6-security-harness.py` §1 | ✅ **NOT triggered** | hostile body (`ip`, `merchant_id`, `attempts_per_ip_60s=999999`, `score_calibrated=0.999`, `decision="block"`, `rules_fired`, PAN, cvv) → persisted row: `merchant_id=merchant_demo` (from key), `attempts_per_ip_60s=1` (server), `score_calibrated=9.57e-05` (model), `rules_fired=[]`, `attempt_uid` ULID, no PAN/cvv. Response `allow`, not injected `block`. |
+| Trusted-edge XFF boundary | harness §2 | ✅ | non-edge peer (redis `172.28.0.20`) XFF → **ignored**; declared-edge proxy (`172.28.0.11`) XFF → honoured (Threat Model K8). Default set not widened. |
+| PAN / CVV / card-hash leakage | harness §3 | ✅ | no `card_hash` key on 200 scanned SSE events (Decision 34); PAN + hash absent from scorer logs; `test_no_pan.py` green |
+| Hostile strings (10KB unicode / RTL / control chars / injection-shaped / CRLF) | harness §4 | ✅ | all → 200, no 5xx |
+| `/v1/outcome` HMAC lifecycle | harness §5 (live) | ✅ | valid → **200 + persisted** (`sig_verified=1`); replayed nonce → **409**; unknown event → **404**; stale ts → **401**; unsigned → **401**; tamper (sign-A-send-B) → 401 via `test_outcome_hmac.py` |
+| Narrator isolation | source + `test_narrator_injection` | ✅ | `build_bundle()` frozen dataclass, closed vocab, `__post_init__` raises; `assemble_prompt` `CHARSET_RE` gate → `PromptGateError` → template; no `user_agent`/free text enters; runs out-of-band (Decision 98) |
+| Operator-action auth | harness §7 | ✅ | replay start/stop/reset + incidents list/detail/confirm/resolve all **401** without a key (well-formed body); `/v1/replay/status` open (Decision 107); SQLi-shaped + 64 KB key → 401 |
+| 422-before-401 on malformed **unauthenticated** body | harness §7 | ℹ️ observation | consistent FastAPI validation-before-handler ordering; **not a bypass** (well-formed unauthenticated → 401 before any effect). By-design; noted for the audit, no DEF-ID. |
+| Demo controls inert by default | throwaway scorer, no env | ✅ | `/v1/demo/{cotenant-ip,flood,fault}` → **404** with `TOLLGATE_DEMO_CONTROLS` unset; `test_demo_*` green |
+| Security acceptance subset | `pytest -k "trust_boundary or no_pan or outcome_hmac or replay_auth or narrator_* or simulator_safety or admission or fail_open"` | ✅ **48 passed** | |
+
+**Phase 6 verdict: GREEN. S-5 NOT triggered.** No P0/P1/P2, no new numbered
+defect. R-5 items (`/v1/stream` unauth, outcome features `0.0`) reconfirmed as
+documented known limitations. One hardening note (no body-size cap; token-bucket
+is the volume mitigation).
