@@ -89,6 +89,13 @@ export default function S2Checkout({ demo, onRoute }) {
   const [submitting, setSubmitting] = useState(false);
   const [latencyMs, setLatencyMs] = useState(null);
   const [outcome, setOutcome] = useState(null);
+  // DEF-D9-012: the `?demo=1` readout only showed `tier` (the routed outcome),
+  // so a misconfigured key (`/v1/score` -> 401) rendered as `tier: fail_open`
+  // and S5 "Order confirmed" -- a green check with no visible sign of the
+  // failure, which cost rehearsal time to diagnose. Surface the transport
+  // status here (demo-only; the plain storefront still fails open silently, per
+  // TRD SS5.2). `null` code + an error -> "no response".
+  const [netStatus, setNetStatus] = useState(null);
   const [pan, setPan] = useState("9990 0100 0000 0000");
   const [expiry, setExpiry] = useState("04 / 28");
   const [cvv, setCvv] = useState("123");
@@ -106,6 +113,7 @@ export default function S2Checkout({ demo, onRoute }) {
     setValidationError(null);
     setSubmitting(true);
     setOutcome(null);
+    setNetStatus(null);
     const started = performance.now();
     let statusCode = null;
     let headers = null;
@@ -141,6 +149,7 @@ export default function S2Checkout({ demo, onRoute }) {
       error = err;
     }
     setLatencyMs(Math.round(performance.now() - started));
+    setNetStatus(statusCode == null ? (error ? "no response" : null) : statusCode);
     const co = resolveClientOutcome({ statusCode, headers, body, error });
     setOutcome(co);
     setSubmitting(false);
@@ -241,6 +250,12 @@ export default function S2Checkout({ demo, onRoute }) {
           <span>/v1/score latency: {latencyMs == null ? "—" : `${latencyMs} ms`}</span>
           {" · "}
           <span>tier: {outcome || "—"}</span>
+          {netStatus != null && netStatus !== 200 && (
+            <>
+              {" · "}
+              <span style={{ color: "#B4232C" }}>HTTP {netStatus}</span>
+            </>
+          )}
           {" · "}
           <span>bin: {digits.slice(0, 6) || "—"} &middot; last4: {digits.slice(-4) || "—"}</span>
           {cotenantIp && (

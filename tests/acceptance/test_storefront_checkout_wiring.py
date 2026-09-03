@@ -79,3 +79,16 @@ class TestStorefrontCheckoutWiring:
             "the primary Pay button must be wired `onClick={() => pay()}` so the "
             "React event cannot reach pay()'s `extraHeaders` (DEF-D9-010)."
         )
+
+    def test_demo_readout_surfaces_a_non_2xx_transport_status(self):
+        """DEF-D9-012: a `/v1/score` 401 used to render only as `tier: fail_open`
+        + S5 'Order confirmed'. The `?demo=1` readout must also show the HTTP
+        status so a misconfigured demo is visible."""
+        src = self._src()
+        assert "setNetStatus(" in src, "pay() must record the transport status"
+        assert re.search(r"netStatus\s*!==?\s*200|netStatus\s*!=\s*null", src), (
+            "the demo readout must render the transport status when it is not 200"
+        )
+        assert "HTTP {netStatus}" in src or "HTTP ${netStatus}" in src, (
+            "the demo readout must show `HTTP <code>` for a non-2xx /v1/score"
+        )
