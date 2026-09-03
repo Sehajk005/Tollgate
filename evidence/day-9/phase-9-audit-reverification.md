@@ -37,20 +37,41 @@ test/observation · **PARTIAL** = fixed but with a caveat · **FAIL** = still pr
 
 ---
 
-## Status summary (this file will be completed after Phase 11)
+## Status summary — FINAL (Phases 4–11 complete)
 
-| Result | IDs |
-|---|---|
-| **PASS** (verified) | 001, 002, 003, 004, 005, 007, 014, 017*, 021, 024 |
-| **PASS pending clean re-run** | 006, 012 |
-| **PENDING → Phase 11** | 008, 009, 010, 011, 013, 015, 016, 018, 019, 020, 022, 023 |
-| **FAIL** | *(none so far)* |
+| Result | IDs | Notes |
+|---|---|---|
+| **PASS** | 001, 002, 003, 004, 005, 006, 007, 008, 010, 011, 012, 014, 016, 017*, 018, 019, 020, 021, 023, 024 | **20 / 24 verified PASS** |
+| **PARTIAL** | 009, 013, 015, 022 | source + backend verified; a live browser re-run was blocked by renderer instability — carried as **Session-3 Rehearsal-#1 checks** (`phase-11-ui-ux.md` §7). None shows any sign of the original defect. |
+| **FAIL** | *(none)* | — |
 
-\* 017 PASS with a coverage note (architectural cap removed; demo traffic doesn't
-exercise the > 200 threshold).
+\* 017 PASS with a coverage note (the frontend-buffer cap is architecturally
+removed — the tile reads `feature_snapshot.attempts_per_merchant_5m`; the demo
+tiers do not naturally produce > 200 attempts / 5 event-minutes, so the
+"exceeds 200" sub-assertion is not exercised by the demo).
 
-AUDIT-010 is a pytest re-run (not UI) — grouped with the "pending clean re-run"
-set; it was green in Session 1 Phase 1 and is being re-confirmed this session.
+### Updates from Phases 10–11
+
+- **006 (scorer wedge mid-60×)** — **PASS.** `verify_60x --gate 60x --faulthandler`
+  9/9 on a clean Docker VM (`health_responsive`, `loop_lag_under_2s`, `no_crash`);
+  `--gate crossing` PASS (bounded discontinuity, no spin). `phase-10-performance.md` §4.
+- **010 (test-order dependence)** — **PASS.** Reversed-file-order pytest: 636 passed
+  / 2 failed / 2 xfailed. The 2 failures are DEF-D9-003 (known, same as forward
+  order) and `test_sse::test_scored_event_reaches_sse_stream` — a **timing flake**
+  (1/1 passes in isolation). `test_day2_e2e` (the finding's actual subject) —
+  **passes on both backends** in reversed order. Hermeticity holds.
+- **012 (drainer SIGSEGV)** — **PASS.** `--gate 60x --faulthandler` `no_crash` ✓,
+  `drainer_alive` ✓, `drainer_connects` ≤ 3/run; Phase 7 `drainer_failures: 0`
+  across every fault.
+- **008, 011, 016, 018, 019, 020, 023, 024** — **PASS**, verified live in Phase 11
+  (`phase-11-ui-ux.md` §1–4, §7).
+
+### Test flake noted (not a numbered defect)
+
+`test_sse::test_scored_event_reaches_sse_stream` timed out in the 509 s
+machine-loaded reversed-order run; **passes clean in isolation** (9 s). Same class
+as Session-1's `test_durability` flake — an SSE/timing-sensitive test. Phase-13
+hygiene candidate (raise the test's SSE wait).
 
 ## D6 regression guards (R-4 re-run)
 

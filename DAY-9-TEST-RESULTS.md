@@ -312,3 +312,43 @@ restored the clean result. Classified **environment**, not a regression.
 **Phase 10 verdict: GREEN** (TRD p99 met; 60×/crossing/faulthandler pass; no leak;
 LLM off-path). DEF-D9-001 stays P2 (Decisions.md re-scope, Phase 13); DEF-D9-004
 stays P3. No new numbered defects.
+
+## Phase 9 — Historical Finding Re-verification (24)
+
+Full detail: `evidence/day-9/phase-9-audit-reverification.md`.
+
+| Result | IDs | Count |
+|---|---|---|
+| **PASS** | 001,002,003,004,005,006,007,008,010,011,012,014,016,017*,018,019,020,021,023,024 | **20 / 24** |
+| **PARTIAL** | 009, 013, 015, 022 | 4 — source + backend verified; live browser re-run blocked by renderer instability → Session-3 Rehearsal-#1 checks. No sign of the original defect in any. |
+| **FAIL** | — | 0 |
+
+Key re-verifications: reset 200 (001), terminal `finished` (002), stop true-terminal
+(003), reset-while-running transactional (004), repeat-run visible (005), no 60×
+wedge + `--faulthandler` no_crash (006/012), replay exceptions surfaced (007),
+D6 no `0.000` (011), reversed-file-order hermetic — `test_day2_e2e` passes both
+backends (010), 60× pacing timing (014), Stream Rail full-width (016), threat-band
+valid CSS (018), **typed card values reach the scorer** (019), SSE `live` not
+`reconnecting` (020), stop/reset 401 (021), ticker score column (023), titles (024).
+
+`\* 017` PASS with a coverage note. **`test_sse::test_scored_event_reaches_sse_stream`**
+flaked in the 509 s reversed-order run (passes 1/1 isolated) — Phase-13 hygiene, not
+a defect.
+
+## Phase 11 — UI / UX QA
+
+Full detail: `evidence/day-9/phase-11-ui-ux.md`.
+
+| Area | Result | Notes |
+|---|---|---|
+| Dashboard D0/D1 | ✅ | title, nav, Stream Rail full-width (AUDIT-016), threat band glyph+text (AUDIT-018), monochrome system banner, `SSE: live` chip (AUDIT-020), 4 tiles, ticker decision-label column (AUDIT-023), no PAN/hash, finished-run state (AUDIT-002) |
+| Dashboard D3 | ✅ | reachable via nav while incidents open (AUDIT-008); narrative (pseudonym only), timeline, contributions, entities (pseudonym + truncated key), audit trail, collapsed client-asserted panel; **no PAN/card-hash in DOM** |
+| Dashboard D6 | ✅ | renders from committed artifact; B0 not omitted; `resolvable:false` → "not resolvable" never `0.000` (AUDIT-011); cost curves + visible optima; rupee gap structural; calibration; 7 negative controls with CI; every metric with its measurement conditions; "configs unchanged since" (Docker freshness works) |
+| Storefront | ✅ merchant look; **AUDIT-019 PASS** | typed PAN `5544 3322 1100 9988` → intercepted `/v1/score` body: `card_hash` = exact SHA-256, `bin=554433`, `last4=9988` — fields wired, not decorative |
+| **Storefront normal checkout** | ❌ **DEF-D9-010 (P1)** | `onClick={pay}` passes the React event into the fetch headers → `TypeError: Invalid value` → `fail_open` → false "Order confirmed", no scored attempt. J6 step 1 broken. 1-line fix, Phase 13. |
+| Responsive | ⚠️ | `#/metrics` 1536/1280/768/390 — green Playwright suite; `#/live`/`#/incident` at 390/768 not visually verifiable in this browser env → Session-3 check |
+| Accessibility (axe WCAG AA) | ⚠️ **DEF-D9-009 (P3)** | 1 violation (`#/metrics`) / 2 (`#/live`): `--tg-primary` `#6366f1` small text on `#12161b` = 4.06:1 < 4.5:1 (active nav item + Launch button). 21–22 axe passes. |
+
+**Phase 11 verdict: GREEN on the dashboard; one P1 on the storefront checkout
+(DEF-D9-010), one P3 a11y contrast (DEF-D9-009).** AUDIT-019 (the CRITICAL
+recheck) PASSES.
