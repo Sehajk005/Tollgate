@@ -1,0 +1,42 @@
+........................................................................ [ 11%]
+........................................................................ [ 23%]
+........................................................................ [ 34%]
+.........................................xx............................. [ 46%]
+........................................................................ [ 57%]
+........................................................................ [ 69%]
+........................................................................ [ 81%]
+........................................................................ [ 92%]
+.............................................                            [100%]
+============================== warnings summary ===============================
+.venv\Lib\site-packages\fastapi\testclient.py:1
+  D:\Projects\Tollgate\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+============================ slowest 25 durations =============================
+29.99s call     tests/acceptance/test_redis_eviction.py::test_maxmemory_eviction_latches_untrusted
+15.01s call     tests/acceptance/test_replay_control_frames.py::TestHeadersFlushOnSubscribe::test_the_stream_emits_a_comment_before_any_event_exists
+15.01s call     tests/acceptance/test_replay_control_frames.py::TestHeadersFlushOnSubscribe::test_the_stream_sets_no_transform_and_no_buffering_headers
+14.62s call     tests/acceptance/test_eval_run_row.py::TestEvalRunRow::test_l1_lgbm_v1_row_on_temporal_test_is_complete_and_idempotent
+12.54s call     tests/acceptance/test_durability.py::test_acknowledged_attempts_survive_hard_kill_exactly_once
+9.98s call     tests/acceptance/test_attack_tiers.py::TestMediumTierRealAndLadderMonotone::test_b0_firing_pattern_easy_3_medium_2_hard_0_across_five_seeds
+8.73s call     tests/acceptance/test_time_travel.py::TestTimeTravel::test_sampled_snapshots_reproduce_exactly
+8.54s call     tests/acceptance/test_layer2_time_discontinuity.py::TestServiceLevelCrossing::test_r3_replay_at_epoch_zero_then_a_wall_clock_checkout
+8.39s call     tests/acceptance/test_demo_lifecycle.py::TestScenarioECrossTier::test_every_tier_runs_from_a_clean_baseline
+7.73s call     tests/acceptance/test_day2_e2e.py::test_launch_easy_replay_drives_rules_decisions_and_threat_band_end_to_end[redis]
+7.45s call     tests/acceptance/test_layer2_time_discontinuity.py::TestServiceLevelCrossing::test_r2_wall_clock_checkout_then_a_replay_at_epoch_zero
+7.23s call     tests/acceptance/test_simulator_determinism.py::TestA3CrossInterpreterDeterminism::test_same_seed_identical_sha_across_python_3_12_and_3_13
+6.07s call     tests/acceptance/test_demo_lifecycle.py::TestScenarioFRefreshMidRun::test_a_late_mount_reconstructs_with_no_gap_and_no_duplicate
+6.01s call     tests/acceptance/test_day2_e2e.py::test_launch_easy_replay_drives_rules_decisions_and_threat_band_end_to_end[memory]
+5.70s call     tests/acceptance/test_demo_lifecycle.py::TestScenarioDRepeatRun::test_the_same_tier_runs_twice_with_identical_counts
+5.59s call     tests/acceptance/test_demo_lifecycle.py::TestScenarioBStop::test_stop_once_reports_the_true_terminal_count
+5.57s call     tests/acceptance/test_demo_lifecycle.py::TestScenarioCReset::test_reset_mid_run_terminates_before_clearing_and_leaves_idle
+4.51s call     tests/acceptance/test_demo_lifecycle.py::TestScenarioDRepeatRun::test_launch_auto_clears_without_an_explicit_reset
+4.24s call     tests/acceptance/test_replay_pacing.py::TestPacingActuallyShortensTheWallClock::test_a_paced_60x_run_reaches_the_episode_far_sooner
+4.07s call     tests/acceptance/test_demo_lifecycle.py::TestIncidentsAreReachable::test_resolve_closes_the_incident
+4.05s call     tests/acceptance/test_sse.py::test_scored_event_reaches_sse_stream
+4.00s setup    tests/acceptance/test_demo_lifecycle.py::TestScenarioDRepeatRun::test_the_same_tier_runs_twice_with_identical_counts
+3.92s call     tests/acceptance/test_demo_lifecycle.py::TestScenarioGFailureRecovery::test_the_system_recovers_completely_after_a_failure
+3.79s setup    tests/acceptance/test_demo_lifecycle.py::TestIncidentsAreReachable::test_an_incident_opens_and_is_readable_through_the_api
+3.77s setup    tests/acceptance/test_demo_lifecycle.py::TestScenarioFRefreshMidRun::test_a_late_mount_reconstructs_with_no_gap_and_no_duplicate
+619 passed, 2 xfailed, 1 warning in 331.16s (0:05:31)

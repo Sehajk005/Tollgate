@@ -1,0 +1,41 @@
+### START Thu, Sep  3, 2026 11:54:44 AM
+=== RUN 1: --gate throughput ===
+
+=== gate: throughput (faulthandler=False) ===
+  PASS  all_finished
+  FAIL  each_under_5s
+  FAIL  throughput_ok
+  PASS  identical_event_counts
+  PASS  no_run_was_swallowed
+  PASS  redis_returns_to_floor
+  PASS  no_degraded_reset
+  PASS  attempt_score_row_parity
+  PASS  drainer_alive
+  PASS  drainer_connects_within_budget
+  PASS  loop_lag_under_2s
+  -> FAIL in 119.9s
+
+report written to evidence/day-9/phase-1/verify60x-throughput.json
+
+OVERALL: FAIL
+THROUGHPUT_EXIT=1
+
+=== RUN 2: --gate 60x --faulthandler ===
+
+=== gate: 60x (faulthandler=True) ===
+  PASS  all_runs_finished
+  PASS  exact_terminal_counts
+  PASS  checkout_interleaved
+  PASS  zero_failed_runs
+  PASS  health_responsive
+  PASS  loop_lag_under_2s
+  PASS  rss_growth_ok
+  PASS  no_crash
+  PASS  drainer_alive
+  -> PASS in 401.9s
+
+report written to evidence/day-9/phase-1/verify60x-60x-faulthandler.json
+
+OVERALL: PASS
+FAULTHANDLER_EXIT=0
+### DONE Thu, Sep  3, 2026 12:03:27 PM

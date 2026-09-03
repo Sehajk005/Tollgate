@@ -1,0 +1,12 @@
+INFO:     Started server process [19200]
+INFO:     Waiting for application startup.
+WARNING:tollgate.scorer:config: loaded environment from D:\Projects\Tollgate\.env
+WARNING:tollgate.scorer:config: GEMINI_API_KEY is set but NARRATOR_BACKEND is 'template', not 'gemini' -- the key is unused
+INFO:tollgate.scorer:Connected to Redis at redis://localhost:6379; using RedisWindowStore
+INFO:tollgate.scorer:loaded Layer-1 model l1-lgbm-v1 + calibrator platt-v1 from models
+INFO:tollgate.scorer:loaded Layer 2 for merchant_demo: policy v7, cusum_h=318.133, tau_flag=0.06475, drift_enabled=True
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:53925 - "GET /healthz HTTP/1.1" 200 OK
+INFO:tollgate.storage.drainer:drainer heartbeat: 13494 rows drained, 1 connect() calls, 0 consecutive failures, offset 44511794
+INFO:tollgate.storage.drainer:drainer heartbeat: 13494 rows drained, 1 connect() calls, 0 consecutive failures, offset 44511794
