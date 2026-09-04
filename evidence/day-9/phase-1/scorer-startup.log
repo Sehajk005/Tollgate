@@ -1,0 +1,9 @@
+INFO:     Started server process [25644]
+INFO:     Waiting for application startup.
+config: loaded environment from D:\Projects\Tollgate\.env
+config: GEMINI_API_KEY is set but NARRATOR_BACKEND is 'template', not 'gemini' -- the key is unused
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:58820 - "GET /healthz HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58846 - "GET /healthz HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49957 - "POST /v1/score HTTP/1.1" 200 OK

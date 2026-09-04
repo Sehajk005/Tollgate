@@ -1,0 +1,68 @@
+{
+  "full_path_sequential": {
+    "n": 300,
+    "rtt_p50": 56.7,
+    "rtt_p95": 69.0,
+    "rtt_p99": 74.0,
+    "rtt_max": 82.3,
+    "compute_p50": 4.0,
+    "compute_p95": 8.0,
+    "compute_p99": 12.0,
+    "compute_max": 23,
+    "compute_mean": 4.3
+  },
+  "full_path_10concurrent": {
+    "n": 500,
+    "rtt_p50": 24.2,
+    "rtt_p95": 62.8,
+    "rtt_p99": 204.1,
+    "rtt_max": 457.2,
+    "compute_p50": 6.0,
+    "compute_p95": 12.0,
+    "compute_p99": 17.0,
+    "compute_max": 20,
+    "compute_mean": 6.8,
+    "status_codes": [
+      200
+    ]
+  },
+  "burst_200": {
+    "n": 200,
+    "rtt_p50": 70.9,
+    "rtt_p95": 106.0,
+    "rtt_p99": 145.1,
+    "rtt_max": 275.5,
+    "compute_p50": 15.0,
+    "compute_p95": 33.1,
+    "compute_p99": 59.0,
+    "compute_max": 139,
+    "compute_mean": 17.0,
+    "wall_s": 14.81,
+    "req_per_s": 13.5,
+    "shed_count": 0
+  },
+  "fail_open_rung": {
+    "n": 100,
+    "rtt_p50": 50.8,
+    "rtt_p95": 75.4,
+    "rtt_p99": 101.2,
+    "rtt_max": 162.7,
+    "compute_p50": 0.0,
+    "compute_p95": 2.1,
+    "compute_p99": 10.0,
+    "compute_max": 12,
+    "compute_mean": 0.6
+  },
+  "narrator": {
+    "backend": "",
+    "narrator_call_rows": "0",
+    "note": "Decision 98 -- Gemini dispatched out-of-band after the terminal SSE publish; score latency above reflects NO Gemini on the path."
+  },
+  "trd_p99_target": {
+    "target_ms": 100,
+    "full_seq_compute_p99": 12.0,
+    "full_conc_compute_p99": 17.0,
+    "met_sequential": true,
+    "met_concurrent": true
+  }
+}

@@ -3669,3 +3669,552 @@ preserved exactly.
 `uv.lock`. `services/scorer/deps.py`, `services/scorer/routes_outcome.py` and
 `packages/narrator/template.py` keep their direct `os.environ` reads — the `.env` load
 populates `os.environ`, so routing them through the module was needless churn.
+
+---
+
+## Decision 102: the backend owns the replay lifecycle; the frontend never derives it
+
+### Context
+Day 2 shipped four wire states (`idle | running | stopped | finished`), a `stop()` that set
+a flag and returned immediately, and a terminal transition that published nothing. TRD §5
+said the replay status is *"mirrored onto every SSE event's `replay` key so the DC strip
+needs no separate polling while events are flowing"* — and the qualifier is the whole
+problem. Every failure the 2026-09-01 QA audit recorded happens exactly when events are
+**not** flowing:
+
+* `run()` wrote `sent = i + 1` *after* `score_attempt` had already published event `i`, so
+  the last event on the wire carried `sent = total - 1`; the terminal transition published
+  nothing, and `App.jsx` had no other source. A completed run rendered as
+  `RUNNING (820/821)` for as long as the tab stayed open (AUDIT-002).
+* `POST /v1/replay/stop` set `_stop_requested` and serialised the status with no `await`, so
+  it always returned the pre-stop snapshot — `running`, with a stale count (AUDIT-003).
+* `run()` had no `try/except`, and `state.replay_task` was stored and never inspected. The
+  strong reference suppressed even asyncio's "Task exception was never retrieved" warning,
+  so a crashed replay was indistinguishable from a slow one (AUDIT-007).
+* A run had no identity, so nothing could tell run 2 from run 1 (AUDIT-015) and the tier
+  selector had nothing authoritative to reconcile against (AUDIT-013).
+
+### Decision
+The driver implements an explicit state machine — `idle`, `starting`, `running`, `stopping`,
+`stopped`, `finished`, `failed`, `resetting` — split into a TERMINAL set
+(`idle, stopped, finished, failed`, controls enabled) and a BUSY set (everything else,
+controls disabled). Every status write goes through `_set_status()`, which stamps
+`updated_at_ms`, so no transition can be silent. `ReplayStatus` gains `run_id` (a ULID minted
+in `mark_starting`), `epoch_ms`, `error`, `stop_reason`, `started_at_ms`, `updated_at_ms`,
+`pace_from` and a derived `terminal` — all additive; every Day-2 key keeps its name and
+meaning.
+
+`stop()` becomes `async`: it sets the flag and awaits an `asyncio.Event` the loop sets on
+**every** exit path, bounded at 2 s. Acknowledged → the true terminal snapshot. Timed out →
+`stopping`, which the poll resolves — never a stale `running`. An `asyncio.Lock` on the
+driver serialises start/stop/reset, acquired with a bounded wait so a wedged driver answers
+409 instead of hanging the request.
+
+Three transports carry the SAME snapshot, in increasing latency and decreasing fragility:
+
+1. a `{"type":"replay_status", "replay": {...}, "reset": bool}` **control frame** on the
+   existing bus — low latency, best-effort;
+2. the **HTTP response** of every start/stop/reset;
+3. a **poll** of `GET /v1/replay/status` on mount and every 1000 ms while non-terminal.
+
+The poll is the path that survives a missed frame, a dead task and a page refresh. The
+frontend's reducer ignores any snapshot with an older `updated_at_ms`, so a late frame can
+never move the UI backwards.
+
+`CANCELLED` is deliberately **not** a wire state: a reset-driven cancel reports `stopped`
+with `stop_reason: "reset"`. Fewer states for the UI to reason about, and no consumer
+distinguishes them. A terminal state that already carries a REASON is never overwritten by a
+later stop or cancel (`_finalize`), so a watchdog `failed` cannot be silently downgraded to
+`stopped`.
+
+### Alternatives considered
+*Keep deriving status from the newest event and simply publish a final event.* Rejected: it
+cannot represent a run that died — the failure mode is precisely the absence of events.
+*Poll only, no control frames.* Rejected: up to 1 s of latency on every transition, visible
+as a lag between pressing Stop and the strip reacting. *Frames only, no poll.* Rejected: a
+dead task publishes nothing, which is AUDIT-007 again.
+
+### Specification impact
+Extends TRD §5's four states to eight and adds the status poll and the control frame
+alongside the SSE mirror. This does not contradict TRD §5: its "while events are flowing"
+qualifier scopes the mirror to exactly the case that already worked. `03-TRD-v2.md` §5
+updated. No schema change — the lifecycle is in-process, as Decision 22 established.
+
+### Implementation impact
+`services/scorer/replay.py` (state machine, `run_id`, `_stopped_event`, `_lifecycle_lock`,
+`_set_status`, `_finalize`, `publish_status`, `snapshot`), `services/scorer/routes_replay.py`
+(all four handlers, `add_done_callback`), `services/scorer/routes_stream.py` (header flush),
+`services/dashboard/src/hooks/useReplayStatus.js` (new),
+`services/dashboard/src/App.jsx`, `services/dashboard/src/components/DemoControlStrip.jsx`.
+Tests: `test_replay_lifecycle.py`, `test_replay_control_frames.py`, `test_replay_failure.py`,
+`test_demo_lifecycle.py` scenarios A/B/G.
+
+---
+
+## Decision 103: replay runs are isolated by an idempotency-key NAMESPACE, never by the digest
+
+### Context
+`windows.lua` sets `tg:{m}:idem:{digest}` with `SET NX PX` and `IDEM_TTL_MS = 24 h`. A
+replay's digests are deterministic per `(tier, seed, epoch_ms)` **by design** — that
+determinism is what A1–A4 and the golden fixtures rest on. So the second run of a tier
+produced byte-identical digests: every `SET NX` found the first run's key, the script
+returned with every window untouched, and `scoring.py` took the stored-decision early return
+— skipping the spool append **and** the SSE publish. The second run of a tier was invisible
+for twenty-four hours (AUDIT-005). On a shared Redis this also silently decided what other
+tests measured (AUDIT-010).
+
+A second, quieter instance of the same class: `attempt_uid` was minted from
+`random.Random(f"ulid:{seed}")`, so two runs of the same tier produced identical ULIDs. Those
+are primary keys, so `INSERT OR IGNORE` dropped every row of every repeat run. Measured
+before the fix: 20 runs × 821 events produced 16 420 scored attempts and **821**
+`attempt_score` rows.
+
+### Decision
+`ScorePathRequest` gains `idem_namespace: str = ""`, applied Python-side when the key is
+built (`packages/features/keys.py::idem_key`): storefront traffic passes `""` and its key is
+byte-identical to what shipped; a replay passes `r{run_id}:`. `idem_digest` itself is
+**unchanged**. That is the load-bearing choice — the digest is a value that determinism
+tests, the golden fixtures and the in-process decision cache all observe, so varying it per
+run would break "two fresh runs agree", while varying only the KEY isolates runs and leaves
+every asserted value identical. `windows.lua` does not change at all, so the
+`EVALSHA`/`SCRIPT LOAD` path and TRD §6.3's one-round-trip invariant hold.
+
+`state.decision_cache` is keyed by the PAIR `(idem_namespace, idem_digest)`, matching the
+Redis key exactly. Keying on the digest alone was a latent hole that became reachable the
+moment Reset started working (plan F-E): run B's attempt could take `idempotent_replay=True`
+from a key run A wrote and then either return run A's decision or MISS the cache and fall
+through to full scoring against a feature vector of zeros — silently wrong output, no error.
+
+The ULID stream is likewise run-scoped: `random.Random(f"ulid:{seed}:{run_id}")` **when a
+run has an identity**. Callers that drive `ReplayDriver.run()` directly and never call
+`mark_starting` — `eval/corpus.py` and A13's speed-0-vs-60 determinism test — have
+`run_id is None` and keep the original seed, so the committed corpus, the trained model and
+the golden fixtures do not move.
+
+Replay-namespaced keys carry `REPLAY_IDEM_TTL_MS = 1 h` rather than 24 h. Correctness now
+comes from the namespace; the TTL is hygiene, exactly as TRD §6.1 always said it should be.
+Storefront traffic keeps 24 h, because Threat Model §3's retry contract depends on it.
+
+### Alternatives considered
+*Fold the run into `idem_digest`.* Rejected — see above; it breaks the determinism contract.
+*Shorten `IDEM_TTL_MS` globally.* Rejected: it weakens the production retry guarantee to work
+around a demo problem, and any TTL short enough to help is short enough to break a legitimate
+retry. *Flush Redis between runs.* Rejected: `FLUSHDB` destroys data the store does not own,
+and it is a manual step the operator must remember — the audit calls that "the single biggest
+time sink".
+
+### Specification impact
+No wire change; `ScoreRequest` and `ScoreResponse` are untouched. TRD §6.1's "TTLs are
+memory hygiene, never correctness" becomes true of the replay path for the first time.
+
+### Implementation impact
+`packages/features/store.py`, `packages/features/keys.py` (`idem_key`, `merchant_prefix` and
+the other non-window key builders, now shared by BOTH backends),
+`packages/features/memory_store.py`, `packages/features/redis_store.py`,
+`packages/features/compute.py`, `services/scorer/scoring.py`, `services/scorer/replay.py`.
+Tests: `test_replay_run_isolation.py`, `test_demo_lifecycle.py` scenario D, and the
+`attempt_score` row-parity check in `scripts/verify_60x.py`.
+
+---
+
+## Decision 104: Launch auto-clears from a terminal non-idle state; Reset stays required
+
+### Context
+Decision 36 established that Reset is *required, not convenient*: the VirtualClock cannot
+move backwards and windows accumulate, so without it the demo runs once per process. The
+audit found the rule was right and the enforcement absent — nothing stopped a Launch from a
+`finished` state, and such a Launch reused the previous run's windows, incidents, enforcement
+ladder and 24-hour idempotency keys.
+
+### Decision
+`POST /v1/replay/start` from a terminal-but-not-idle state (`finished`, `stopped`, `failed`)
+runs the full reset sequence first and reports `auto_reset: true`, plus the per-layer
+`cleared` map and `degraded` flag. From `idle` it reports `auto_reset: false` and clears
+nothing. A start while BUSY is still a 409.
+
+This **extends** Decision 36 rather than contradicting it. Reset remains a required,
+explicit, separately-tested operation; it becomes the manual form of an invariant the system
+now enforces on the operator's behalf. The auto-clear wipes the previous run's incidents,
+exactly as the Reset button already did.
+
+### Alternatives considered
+*Refuse a Launch from a dirty state with a 409 telling the operator to press Reset.* Honest,
+but it makes the most common demo action a two-step ritual whose first step exists only to
+satisfy the implementation. *Clear implicitly at the END of a run.* Rejected: it destroys the
+state an operator wants to inspect the moment the run finishes, which is when they look.
+
+### Specification impact
+`08-UIUX-SPEC-v2.md` §6.12 and `06-APPFLOW-v2.md` updated: Launch from a completed run is a
+supported action and produces a full second run. Decision 36 is extended, not superseded.
+
+### Implementation impact
+`services/scorer/routes_replay.py::replay_start`, `services/scorer/replay.py::reset`.
+Tests: `test_replay_reset.py::TestAutoClearOnLaunch`, `test_demo_lifecycle.py` scenario D.
+
+---
+
+## Decision 105: reset is transactional — cancel, await, clear, publish, idle — and never a bare 500
+
+### Context
+`ReplayDriver.reset()` called `self._state.window_store.clear()` on its first line. That
+method existed only on `InMemoryWindowStore` and was never on the `WindowStore` protocol, so
+in the DOCUMENTED configuration — `TOLLGATE_REDIS_URL` set, which is what `.env.example`
+ships and what the README instructs — it raised `AttributeError`, took the other five clears
+down with it, and returned HTTP 500. Reset, the single most-used control in the demo, had
+never once worked against Redis (AUDIT-001).
+
+Separately, `reset()` held no reference to `state.replay_task`. A reset issued mid-run
+cleared the windows while the loop kept scoring into them, and the loop then overwrote
+`status` on its next iteration — so the UI showed `idle` while the backend was still running
+(AUDIT-004).
+
+### Decision
+Reset runs under the driver's lifecycle lock in exactly this order:
+
+    cancel/stop -> AWAIT termination -> clear -> publish cleared -> idle
+
+If the task will not die (stop, then cancel, each bounded at 2 s), reset returns **409 and
+leaves state untouched** — refusing beats corrupting live detector state. The system may
+never report `idle` while the previous replay is alive; because `idle` is only reached after
+the task is awaited, and `start` cannot observe the status without holding the same lock, the
+AUDIT-004 window is closed by construction rather than by timing.
+
+`WindowStore` gains `clear(merchant_id=None) -> int` on the protocol and both backends.
+`RedisWindowStore.clear` uses a cursor `SCAN MATCH tg:{m}:* COUNT 500` plus batched `UNLINK`
+(falling back to `DEL`), on the HEALTH client so `test_one_round_trip`'s
+one-command-per-score assertion is untouched — and **never `FLUSHDB`**: this store shares a
+logical DB with whatever else the operator keeps there, and destroying a stranger's keys to
+reset a demo is not an acceptable trade. `MERCHANT_SCOPED_KEY_RE` plus the shared key
+builders (Decision 103) are what make the prefix scan provably complete.
+`InMemoryWindowStore` is re-keyed to the same merchant-scoped strings, which is what lets it
+honour the same contract — and incidentally fixes two merchants silently sharing a `card24`
+counter.
+
+Each layer clears **independently**, in its own `try/except`, and the route returns a
+per-layer `cleared` map plus `degraded`. Redis unreachable now means `200` with
+`cleared.window_store: false` and a strip that says which layer is dirty — never a bare 500
+from one failing layer. `decision_cache.clear()` joins the list (plan F-E).
+
+### Alternatives considered
+`FLUSHDB` — rejected above. One `try/except` around the whole sequence — rejected: that is
+the original defect in a different shape, since one failure still disables the rest and the
+operator still cannot tell which.
+
+### Specification impact
+`04-BACKEND-SCHEMA-v2.md` §4's key discipline is unchanged and is now relied on for deletion
+as well as for scoping. No schema change.
+
+### Implementation impact
+`packages/features/store.py`, `packages/features/redis_store.py`,
+`packages/features/memory_store.py`, `packages/features/keys.py`,
+`services/scorer/replay.py` (`reset`, `_clear_all`, `_await_task_termination`),
+`services/scorer/routes_replay.py`. Tests: `test_window_store_clear.py`,
+`test_replay_reset.py`, `test_demo_lifecycle.py` scenario C.
+
+---
+
+## Decision 106: `pace_from: "episode"` is a WALL-CLOCK control; determinism is untouched
+
+### Context
+At the demo's 60x setting an `easy` replay covers 3 hours of event time in ~179 wall-clock
+seconds, of which the attack episode — the only part anyone watches for — occupies about ten.
+The audit filed this as a demo-design defect, not an engine defect, and it is right to: the
+virtual clock measured 58.5x against a 60x nominal and `test_time_travel` passes. The clock
+must not be touched.
+
+### Decision
+`POST /v1/replay/start` accepts `pace_from: "episode" | null`. With `"episode"`, `run()`
+computes `pace_from_ms = max(0, episodes[0].started_at - 20_000)` and skips the pacing
+`asyncio.sleep` for events before it. **No event is skipped, reordered or re-timed**:
+`set_ms` and `score_attempt` are untouched, so the same events are scored in the same order
+at the same virtual times and produce the same decisions. Only the wall-clock sleep changes.
+
+The falsifiable form of that claim is asserted, not argued: `test_replay_pacing.py` runs the
+tier paced and unpaced and requires byte-identical `(attempt_uid, decision, rules_fired,
+ingest_time)` sequences. `pace_from` is inert at `speed=0` (nothing sleeps) and falls back to
+uniform pacing when the stream carries no episode.
+
+### Alternatives considered
+Raising the speed multiplier — rejected: it compresses the pre-roll and the attack equally,
+so the attack becomes too fast to read. Trimming the pre-episode events — rejected outright:
+it would change what is scored, which is the one thing that must not move, since the windows
+those events build are exactly what make the detection meaningful.
+
+### Specification impact
+Spec extension to `08-UIUX-SPEC-v2.md` §6.12 (one checkbox in the DC strip, default on) and
+`03-TRD-v2.md` §5 (`pace_from` on the start body and on `ReplayStatus`).
+
+### Implementation impact
+`services/scorer/replay.py` (`ReplayRequest.pace_from`, `_pace_from_ms`, the sleep branch),
+`services/scorer/routes_replay.py` (`ReplayStartBody.pace_from`),
+`services/dashboard/src/components/DemoControlStrip.jsx`. Tests: `test_replay_pacing.py`.
+
+---
+
+## Decision 107: `/v1/replay/stop` and `/reset` are authenticated; `/status` stays deliberately open
+
+### Context
+Both mutating replay routes returned 200 with no key. `routes_replay.py`'s docstring
+justified this with "Auth still gates starting a replay; the loop does not re-authenticate
+per event" — a true statement about a different question. Both are state-mutating, and
+`reset` destroys live detector state: windows, the CUSUM, open incidents and the enforcement
+ladder. Anything that could reach the port could wipe the demo mid-run (AUDIT-021).
+
+### Decision
+`POST /v1/replay/stop` and `POST /v1/replay/reset` authenticate with the same
+`resolve_merchant_id_cached` used by `/v1/score` and `/v1/incidents`, including its
+`AuthBackendUnavailable -> 503` behaviour — authentication never fails open (Decision 89).
+
+`GET /v1/replay/status` stays **unauthenticated**, consistent with `/v1/stream` and
+`/v1/stream/recent` (Decision 94). It discloses strictly less than the stream already does,
+and the frontend's mount-time recovery poll has to work unconditionally for a page refresh to
+reconstruct — including on a dashboard whose `VITE_TOLLGATE_API_KEY` is misconfigured, which
+is precisely when an operator most needs to see the true state.
+
+Frontend cost is zero: `DemoControlStrip.callReplay` already sent `X-Tollgate-Key` on all
+three POSTs.
+
+### Alternatives considered
+Authenticating `/status` as well — rejected for the reason above: the recovery path must not
+depend on the thing most likely to be misconfigured. Leaving stop/reset open because the demo
+is loopback-bound — rejected: Decision 94 accepted that argument for READ surfaces
+explicitly, and extending it to destructive writes is a different and much weaker claim.
+
+### Specification impact
+`01-THREAT-MODEL-v2.md` §175-177's loopback posture is unchanged for reads. Decision 94 is
+narrowed to reads, where it was always argued. Any external script calling stop/reset without
+a key now breaks — intended.
+
+### Implementation impact
+`services/scorer/routes_replay.py` (`_auth` helper, both handlers, corrected docstring).
+Tests: `test_replay_auth.py` — 401 without a key, 401 with a wrong key, 200 with a valid one,
+503 on a cold cache plus an unavailable auth DB, `status` still 200 unauthenticated, and that
+a REJECTED call changes no state.
+
+---
+
+## Decision 108: AUDIT-006's root cause, and why the Layer-2 catch-up bound preserves the answer
+
+### Context
+AUDIT-006 recorded a scorer that pinned ~100 % of one core, froze the replay counter and
+`virtual_time_ms`, and stopped answering `/healthz`, `/v1/score` and `/v1/replay/status`
+entirely — with a healthy Redis, an unlocked SQLite and a flat 9 MB working set. The audit
+could not determine the cause, and its own controlled reproduction passed cleanly. Recorded
+here so the bound below is never "simplified away" by a future reader who does not know what
+it prevents.
+
+**The cause.** `Layer2Engine._commit_through()` was an unbounded loop over CUSUM bucket
+indices, running synchronously on the event-loop thread:
+
+    while mc.pending_bucket < target_bucket: ...
+
+`bucket_index = ingest_ms // 10_000`. Replay time and serving time are the SAME domain: a
+replay launched with `epoch_ms: 0` (what the dashboard's Launch sends) produces bucket
+indices 0…1080, while a `POST /v1/score` from the storefront uses `SystemClock` and produces
+~1.756 × 10⁸. Both feed one `Layer2Engine` for one merchant. **One crossing is ~175 600 000
+iterations**, each doing `baseline_lambda0()` + `PoissonCusum.observe()`. Measured at
+~200 000 buckets/s, that is **~20 minutes** of uninterruptible CPU inside a single call —
+every observation the audit recorded, including why the two wedges happened at different
+positions (743/821 and 0/821): the freeze point depends on WHEN the crossing happens, not on
+the data. It also explains why a single-epoch controlled run finished cleanly: it never
+crosses domains.
+
+The reverse direction was quieter and worse. The loop only ran forwards, so a wall-clock
+attempt followed by an epoch-0 replay cost nothing in CPU but stranded `pending_bucket`
+~1.756e8 buckets in the future: `observe()` then never matched the live bucket, `pending_n`
+never incremented, and Layer 2 silently never fired again for the life of the process.
+
+### Decision
+A gap wider than `MAX_CATCHUP_BUCKETS` is treated as a **discontinuity** — two unrelated
+timelines meeting — and resolved analytically instead of iteratively. Forward: commit the
+still-pending bucket for real, fold only as many empty buckets as can still change the
+answer, then land on the target. Backward: reset the merchant CUSUM into the new time domain
+rather than stranding it in the old one, and log it.
+
+**Why this is answer-preserving and not a mitigation.** The one-sided Poisson CUSUM is
+`S_t = max(0, S_{t-1} + n_t·ln(λ₁/λ₀) − (λ₁ − λ₀))`, so an empty bucket subtracts exactly
+`(λ₁ − λ₀)` and floors at zero. `λ₁ = ρ·λ₀` and `λ₀` is floored at `lambda_min`, so **every**
+empty bucket removes at least `decay_floor = (ρ − 1)·lambda_min`, whatever the hour-of-day
+volume profile. After `ceil(S / decay_floor)` empty buckets `S` is exactly `0.0`, and `0.0`
+is a fixed point — every further empty bucket leaves it there. That horizon is **computed
+from the live parameters on every crossing**, not assumed, so a future `ρ` or `lambda_min`
+change cannot silently invalidate the argument; when no such proof exists (a non-decaying
+parameterisation) the statistic is reset explicitly and the log says so.
+`test_layer2_catchup_bound.py` asserts the equivalence DIFFERENTIALLY against a verbatim copy
+of the original unbounded loop, field for field.
+
+**Why 17 280 (48 h) and not the 24 h first proposed.** The horizon was measured, and the
+measurement rejected 24 h. Replaying all four tiers at seed 42, under the pessimistic
+assumption that every attempt is τ_flag-gated:
+
+| tier | events | bucket span | peak S_t | empty buckets to floor |
+|---|---|---|---|---|
+| easy | 821 | 1 076 | 948.195 | 11 853 |
+| medium | 701 | 1 076 | 753.776 | 9 423 |
+| hard | 508 | 1 076 | 437.316 | 5 467 |
+| evasive | 390 | 1 076 | 253.632 | 3 171 |
+
+with `decay_floor = (5.0 − 1) × 0.02 = 0.08`. The worst tier needs **11 853** buckets, so
+8 640 could not carry the equivalence argument; 17 280 does, with 1.46× margin. Re-measure
+before lowering it — `test_layer2_catchup_bound.py` fails loudly if the horizon moves.
+
+Ordinary operation never reaches the bound: a 3-hour replay spans 1 076 buckets, and a test
+asserts the discontinuity path is not taken once during a full easy replay, so behaviour
+inside the horizon is byte-identical to Day 6.
+
+### Defence in depth
+The bound is the fix. Three other things exist so a residual stall is never silent again: a
+permanent event-loop-lag monitor (`services/scorer/app.py`, WARNING above 2 s), a replay
+progress watchdog, and `TOLLGATE_FAULTHANDLER=1` for native faults. The watchdog's limitation
+is stated in the code rather than papered over — it is an asyncio task, so it cannot fire
+while the loop is blocked by a synchronous spin. That is the bound's job; the lag monitor
+records the block as soon as the loop is free again, so evidence survives either way.
+
+### Specification impact
+None. The statistic, its parameters and its wire representation are unchanged.
+
+### Implementation impact
+`packages/detect/layer2.py` (`MAX_CATCHUP_BUCKETS`, `_commit_one`,
+`_empty_buckets_to_floor`, `_commit_forward_discontinuity`,
+`_commit_backward_discontinuity`), `services/scorer/app.py` (lag monitor, faulthandler gate),
+`services/scorer/replay.py` (watchdog). Tests:
+`test_layer2_time_discontinuity.py` (R1/R2/R3), `test_layer2_catchup_bound.py`, and the
+crossing gate in `scripts/verify_60x.py`.
+
+---
+
+## Decision 109: `docker compose up` is the containerized deployment path; the mutable demo DB lives on a Linux volume; the trusted edge is configurable
+
+### Context
+TRD v2 §3 names `docker compose up` as the laptop deployment, but the repo had **no
+Dockerfiles** and `docker-compose.yml` defined only the two Redis services (Day 9
+reconciliation R-1). The README's manual `uv run uvicorn ... + npm run dev` path was the
+only working way to stand the stack up -- which is not a release gate a judge can rely on.
+
+### Decision
+Day 9 Phase 2 builds the real path: `docker compose up --build` brings up `redis`,
+`redis-small`, a one-shot `bootstrap`, `scorer`, `storefront`, `dashboard`, with
+healthchecks and `depends_on` ordering (`redis` healthy -> `bootstrap` completed ->
+`scorer` healthy -> frontends). The repo is bind-mounted into every container for
+dev-parity.
+
+Three configuration seams are introduced, **all additive, all byte-identical off-Docker**:
+
+- **`TOLLGATE_SCORER_URL`** -- both `vite.config.js` files read it for the `/v1` proxy
+  target (unset -> `http://localhost:8080`; Compose -> `http://scorer:8080`). Both Vite
+  servers also run `--host 0.0.0.0`.
+- **`TOLLGATE_TRUSTED_EDGE_HOSTS`** (`services/scorer/net.py`) -- a comma-separated list
+  *added to* the built-in `{127.0.0.1, ::1, testclient}`. Under Compose it is the two Vite
+  proxy containers' static IPs (`172.28.0.11`, `172.28.0.12`). This is Threat Model K8's
+  "X-Forwarded-For hop validated against the merchant's declared edge" -- without it every
+  storefront request collapses to one container IP, and it is also the enabler for J6
+  step 6 (a checkout attributable to an enforced IP). Unset -> the trust boundary is
+  exactly today's.
+- **`TOLLGATE_DB_PATH` / `TOLLGATE_SPOOL_DIR`** (`services/scorer/deps.py::build_default`,
+  `scripts/seed_merchant.py`, `scripts/compose_bootstrap.py`) -- select the demo DB + spool
+  location. Unset, or an explicit argument (the durability/lock test runner) -> unchanged
+  (`tollgate.db` / `spool` relative to CWD).
+
+**The mutable demo DB + spool live on a Linux-native named volume `tollgate_data`, not the
+bind mount.** SQLite in WAL mode cannot mmap its `-shm` file over Docker Desktop's Windows
+bind-mount filesystem, so a fresh read/write connection fails with `unable to open database
+file` (`GET /v1/incidents` -> 500 was the symptom). The volume fixes it with **no
+journal-mode or storage-semantics change** -- every backend test that pins WAL
+(`test_drainer_lifecycle.py`) operates on its own tmp DB and is unaffected. `data/corpus/`
+(the 18 MB read-only reference corpus) **stays bind-mounted**; the `bootstrap` copies it to
+the volume before `learn_store_baseline` / `tune_cusum` so the reference file is never
+written.
+
+Secrets (`VITE_TOLLGATE_API_KEY`, `TOLLGATE_OUTCOME_SECRET`) and `TG_CONFIG_HASH` flow
+through `deploy/compose.env` (gitignored; `deploy/compose.env.example` documents it). The
+one-shot `bootstrap` (`scripts/compose_bootstrap.py`) writes it: a fresh DB is seeded and
+the new key/secret written; an existing merchant reuses a key that hashes to
+`merchant.api_key_hash`, or **fails loudly** -- the `INSERT OR IGNORE` dead-key footgun is
+never triggered. `tune_cusum` is skipped once `policy_config.thresholds` is populated, so
+repeated `up` does not sprawl policy versions.
+
+### Alternatives considered
+Flipping the demo DB to `journal_mode=DELETE` so the bind mount works -- rejected: it
+mutates the host DB's journal mode as a side effect of running Compose, and Docker
+Desktop's Windows `fcntl` advisory locking is itself unreliable. A self-contained image
+that bakes in `models/` + the corpus -- rejected: the corpus is 18 MB and un-rebuildable
+without a LightGBM retrain (the plan's own rationale). `env_file` alone for the
+bootstrap-issued secret -- insufficient: Compose resolves `env_file` before `bootstrap`
+runs, so the scorer entrypoint also sources `deploy/compose.env` at start.
+
+### Specification impact
+TRD v2 §3's `docker compose up` is now real. No detection, scoring, window, or enforcement
+semantics change. `01-THREAT-MODEL-v2.md` K8's "declared edge" is now configurable rather
+than a hard-coded loopback set -- a spec-alignment, not a widening (default unchanged).
+
+### Implementation impact
+New: `docker-compose.yml` (rewritten), `services/{scorer,dashboard,storefront}/Dockerfile`,
+`scripts/compose_bootstrap.py`, `deploy/compose.env.example`, `deploy/uvicorn-logging.json`,
+`.dockerignore`. Changed (additive): `services/scorer/net.py`, `services/scorer/deps.py`,
+`scripts/seed_merchant.py`, `services/{dashboard,storefront}/vite.config.js`,
+`services/scorer/Dockerfile` CMD (`--log-config` for DEF-D9-002), `.gitignore`. Known
+follow-up: **DEF-D9-003** -- an early bootstrap iteration drifted `data/corpus/tollgate.db`
+(`store_baseline.updated_at` + free pages) before the corpus-working-copy guard existed;
+`test_d6_provenance::test_corpus_identity` fails on the SHA; no metric impact; Phase 5
+reconciles.
+
+---
+
+## Decision 110: `verify_60x --gate throughput` speed sub-checks are advisory on the reference machine; its correctness sub-checks stay blocking
+
+### Context
+`scripts/verify_60x.py --gate throughput` runs 20 sequential `easy` speed-0 replays and
+asserts, among other things, two **speed** sub-checks: `each_under_5s` (every run wall-clock
+< 5 s) and `throughput_ok` (sustained >= 400 attempts/s). On the Day-9 reference machine
+(Windows 11 + Docker Desktop, single-worker uvicorn scorer, Redis window store reached over
+the Docker bridge) both **FAIL** at baseline and after every Day-9 change: 2-3 / 20 runs
+land at 5-6 s, mean throughput ~305 attempts/s. This was logged as **DEF-D9-001 (P2)** in
+Session 1 and quantified in Phase 10.
+
+Every **other** sub-check of the same gate PASSES on every run: `all_finished`,
+`identical_event_counts = [821]`, `no_run_was_swallowed`, `attempt_score_row_parity`,
+`redis_returns_to_floor = 0`, `no_degraded_reset`, `drainer_alive` /
+`drainer_connects_within_budget`, `loop_lag_under_2s`, `rss_growth_mb` negative.
+
+Phase 10 established the root cause with direct measurement. Focused `/v1/score` latency
+against the running Compose scorer: **compute `latency_ms` p99 = 12 ms sequential / 17 ms at
+10 concurrent / 59 ms burst** -- the TRD v2 SS1 `/v1/score` p99 < 100 ms budget is met with
+a wide margin, and the fail-open rung is faster still (p99 10 ms). The `>= 400 attempts/s`
+figure is a *serial single-client HTTP loop* measure: it is bounded by the Windows ->
+container loopback round-trip (~55-70 ms, of which ~15 ms is compute) plus Python loop
+overhead, not by request latency. The prior QA audit already measured this machine at
+**58.5x** against a 60x nominal replay factor; Phase 10 re-measured **~59x**.
+
+### Decision
+For the Day-9 release verdict, the `verify_60x --gate throughput` **speed** sub-checks
+(`each_under_5s`, `throughput_ok`) are **advisory (non-blocking) on this reference machine**.
+The **correctness / determinism / repeatability** sub-checks of the same gate remain
+**blocking** (they are what AUDIT-005 / AUDIT-012 / the "the demo is repeatable" gate rest
+on). `verify_60x --gate 60x`, `--gate 60x --faulthandler`, and `--gate crossing` stay
+**blocking** and PASS.
+
+`scripts/verify_60x.py` is **not modified** -- no threshold is lowered, no assertion is
+deleted or `xfail`ed (Plan SS8: do not weaken a failing test). The gate still reports the
+speed sub-checks as failing; the release criteria simply do not treat those two lines as a
+blocker, on the evidence above, and record why here.
+
+### Alternatives considered
+- **Lower the thresholds in `verify_60x.py`** -- rejected. It silently redefines the gate
+  and would mask a genuine serving regression if one later appears. The number stays; its
+  interpretation is what this decision fixes.
+- **Rewrite the harness to drive `/v1/score` from a concurrent client** -- rejected as
+  out-of-scope for Day 9, and it would change what `--gate throughput` has historically
+  measured (a serial-loop repeatability soak), losing continuity with the Session-1 baseline.
+- **Run the soak against a multi-worker uvicorn scorer** -- rejected. The demo and every
+  other gate run single-worker; the window store's per-process state (Decision 71) and the
+  drainer's single-connection budget are asserted under that assumption.
+
+### Specification impact
+None. TRD v2 SS1 `/v1/score` p99 < 100 ms is met (12 ms). The 60x nominal replay factor is
+~59x on this machine -- a documented reference-machine limitation, consistent with the prior
+audit's 58.5x, not a serving inefficiency.
+
+### Implementation impact
+No code change. `DAY-9-DEFECT-LOG.md` records this decision as the DEF-D9-001 disposition;
+`DAY-9-TEST-RESULTS.md` lists the throughput gate's speed sub-checks as advisory with the
+p99-compute evidence, and its correctness sub-checks as blocking + green.

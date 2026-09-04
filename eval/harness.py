@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import argparse
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -284,12 +284,27 @@ def _calibration_block(
         return (s1 * s1 / s2) if s2 > 0 else 0.0
 
     def _regime(w, platt_pc) -> dict:
+        # Source: plan FIX-BE-04 -- `ece_raw` completes Eval Protocol §3.4's
+        # {raw, Platt, Platt+prior} triple; it is the SAME `metrics.ece(...)`
+        # call the other two use, over the `raw = sigmoid(margins)` already in
+        # scope. `ece_gap_platt_prior_vs_platt` is the derived improvement
+        # (positive == prior correction reduced ECE). No metric maths changes.
+        ece_raw = ece(raw, labels, n_bins=n_bins, weights=w)
+        ece_platt = ece(platt, labels, n_bins=n_bins, weights=w)
+        ece_platt_prior = ece(platt_pc, labels, n_bins=n_bins, weights=w)
+        gap = (
+            ece_platt - ece_platt_prior
+            if ece_platt is not None and ece_platt_prior is not None
+            else None
+        )
         return {
             "brier_raw": brier(raw, labels, weights=w),
             "brier_platt": brier(platt, labels, weights=w),
             "brier_platt_prior": brier(platt_pc, labels, weights=w),
-            "ece_platt": ece(platt, labels, n_bins=n_bins, weights=w),
-            "ece_platt_prior": ece(platt_pc, labels, n_bins=n_bins, weights=w),
+            "ece_raw": ece_raw,
+            "ece_platt": ece_platt,
+            "ece_platt_prior": ece_platt_prior,
+            "ece_gap_platt_prior_vs_platt": gap,
             "effective_n": _eff_n(w),
         }
 
@@ -300,13 +315,24 @@ def _calibration_block(
             for rb in reliability_bins(platt_pc, labels, n_bins=n_bins, weights=w)
         ]
 
+    regime_pi0 = _regime(w0, platt_pc0)
+    regime_pi1 = _regime(w1, platt_pc1)
+    # Source: plan FIX-BE-04 / Eval Protocol §3.4 -- "If prior correction does
+    # not improve ECE at pi1, it is broken and the test says so." The page
+    # states the true result either way from this flag.
+    helped_at_pi1 = (
+        regime_pi1["ece_platt"] > regime_pi1["ece_platt_prior"]
+        if regime_pi1["ece_platt"] is not None and regime_pi1["ece_platt_prior"] is not None
+        else False
+    )
     return {
         "n": len(labels),
         "pi_t": pi_t,
         "n_bins": n_bins,
         "raw_prevalence": sum(1 for lbl in labels if lbl) / len(labels),
-        "pi0": _regime(w0, platt_pc0),
-        "pi1": _regime(w1, platt_pc1),
+        "prior_correction_helped_at_pi1": helped_at_pi1,
+        "pi0": regime_pi0,
+        "pi1": regime_pi1,
         "reliability_pi0": _reliab(platt_pc0, w0),
         "reliability_pi1": _reliab(platt_pc1, w1),
     }
@@ -329,6 +355,13 @@ class BaselineSummary:
     b2_operating_point: object
     sanity_recall_at_b1_fpr: Dict[str, Optional[float]]
     sanity_recall_at_b2_fpr: Dict[str, Optional[float]]
+    # Source: plan FIX-BE-03 -- per stream-tier {b1, b2, model, b0} operating
+    # point. B1/B2 scores are computed ONCE over the whole `split` timeline
+    # (bitemporal correctness -- B1 needs the full outcome-visibility timeline)
+    # and only THEN partitioned by `stream_tier`; re-running `b1_decline_velocity`
+    # on a tier subset would silently credit the detector with information it
+    # never had. tp/fp/tn/fn therefore sum exactly to the overall counts.
+    per_tier: Dict[str, Dict[str, object]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -347,12 +380,23 @@ class HarnessRun:
     audit_block: Optional[dict] = None
     model_version: Optional[str] = None
     b0_present: bool = False
+    # Source: plan FIX-BE-02 -- the SAME scorer instances `run_all` built (or
+    # `{}` when no model bundle), so `eval/d6.py::_block2_negative_controls` can
+    # score negative controls with the model/B0 without reconstructing scorers
+    # (which would risk a different `pi_s`). key -> (model_version, scorer).
+    model_scorers: Dict[str, Tuple[str, object]] = field(default_factory=dict)
 
 
-def _baseline_summary(split: Split, seed: int) -> BaselineSummary:
+def _baseline_summary(
+    split: Split, seed: int,
+    *, model_scorers: Optional[Dict[str, Tuple[str, object]]] = None,
+    tier_e_split: Optional[Split] = None,
+) -> BaselineSummary:
     from eval.baselines import B2BinConcentrationScorer, b1_decline_velocity
     from eval.metrics import operating_point, recall_at_matched_fpr
     from packages.features.memory_store import InMemoryWindowStore
+
+    theta_ch = load_cost_model().tier_ladder()[COST_TIER]
 
     samples = split.samples
     labels = [s.is_attack for s in samples]
@@ -373,9 +417,51 @@ def _baseline_summary(split: Split, seed: int) -> BaselineSummary:
         sanity_recall_b1[key] = recall_at_matched_fpr(scores, labels, b1_point.fpr) if b1_point else None
         sanity_recall_b2[key] = recall_at_matched_fpr(scores, labels, b2_point.fpr) if b2_point else None
 
+    # --- per-tier operating points (plan FIX-BE-03) -----------------------
+    # easy/medium/hard: B1/B2/model/B0 are scored ONCE over the whole
+    # `temporal_test` timeline (above) and only THEN sliced by `stream_tier`.
+    # Re-running `b1_decline_velocity` on a tier subset would corrupt its
+    # bitemporal decline counts. tp/fp/tn/fn therefore sum exactly to overall.
+    model_all: Dict[str, List[float]] = {
+        mv: [scorer(s) for s in samples]
+        for _key, (mv, scorer) in (model_scorers or {}).items()
+    }
+
+    per_tier: Dict[str, Dict[str, object]] = {}
+    for tier in ("easy", "medium", "hard"):
+        idx = [i for i, s in enumerate(samples) if s.stream_tier == tier]
+        if not idx:
+            continue
+        tlabels = [labels[i] for i in idx]
+        row: Dict[str, object] = {
+            "b1": operating_point([b1_scores[i] for i in idx], tlabels, theta=0.5),
+            "b2": operating_point([b2_scores[i] for i in idx], tlabels, theta=0.5),
+        }
+        for mv, scores in model_all.items():
+            key = "model" if mv == MODEL_MODEL_VERSION else "b0" if mv == B0_MODEL_VERSION else mv
+            row[key] = operating_point([scores[i] for i in idx], tlabels, theta=theta_ch)
+        per_tier[tier] = row
+
+    # evasive: the dedicated `tier_e` split is a homogeneous, complete timeline
+    # of its own, so B1/B2 are scored over ALL of it (no slice, no corruption).
+    if tier_e_split is not None and tier_e_split.samples:
+        te = tier_e_split.samples
+        te_lbls = [s.is_attack for s in te]
+        te_b1 = b1_decline_velocity(list(te))
+        te_b2 = [B2BinConcentrationScorer(InMemoryWindowStore())(s) for s in te]
+        row = {
+            "b1": operating_point(te_b1, te_lbls, theta=0.5),
+            "b2": operating_point(te_b2, te_lbls, theta=0.5),
+        }
+        for _k, (mv, scorer) in (model_scorers or {}).items():
+            key = "model" if mv == MODEL_MODEL_VERSION else "b0" if mv == B0_MODEL_VERSION else mv
+            row[key] = operating_point([scorer(s) for s in te], te_lbls, theta=theta_ch)
+        per_tier["evasive"] = row
+
     return BaselineSummary(
         b1_operating_point=b1_point, b2_operating_point=b2_point,
         sanity_recall_at_b1_fpr=sanity_recall_b1, sanity_recall_at_b2_fpr=sanity_recall_b2,
+        per_tier=per_tier,
     )
 
 
@@ -452,6 +538,7 @@ def run_all(
     # SAME scorers (sanity + model/B0). Skipped entirely when the search was
     # cut (build_tier_e_dataset returns []).
     tier_e_samples = build_tier_e_dataset(seed)
+    te_split: Optional[Split] = None
     if tier_e_samples:
         te_split = Split(name="tier_e", samples=tuple(tier_e_samples))
         te_reports: List[Report] = []
@@ -466,9 +553,13 @@ def run_all(
     return HarnessRun(
         eval_reports=eval_reports, temporal_train_n=temporal_train.n, holdout_train_n=holdout_train.n,
         negative_scenario_names=tuple(negative_splits.keys()), negative_splits=negative_splits,
-        baseline_summary=_baseline_summary(temporal_test, seed), seed=seed,
+        baseline_summary=_baseline_summary(
+            temporal_test, seed, model_scorers=model_scorers, tier_e_split=te_split,
+        ),
+        seed=seed,
         calibration_block=calibration_block, audit_block=audit_block,
         model_version=MODEL_MODEL_VERSION if have_model else None, b0_present=have_model,
+        model_scorers=model_scorers,
     )
 
 
@@ -541,7 +632,8 @@ def main() -> None:
     from eval.d6 import write_artifact
 
     d6_path = write_artifact(
-        runs, args.out / "d6.json", seeds_used=max(1, args.seeds), base_seed=args.seed
+        runs, args.out / "d6.json", seeds_used=max(1, args.seeds), base_seed=args.seed,
+        corpus_db=args.corpus_db, model_dir=args.model_dir,
     )
     print(f"wrote {d6_path}")
 

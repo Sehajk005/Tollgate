@@ -1,0 +1,10 @@
+# ignoring: provenance.build_hash, provenance.generated_at, provenance.head_at_generation, provenance.tree_dirty_at_generation
+
+## changed (2)
+  ~ provenance.corpus_db_sha256: "7f6ef6dda715e2f263e970147948d436adcd162e86ca0429cf8b7ab933da9753" -> "9e1e3346a7aea5b8a7be1e3bbfa2e3d3dca87a65d4c83846fa5604f40369a63b"
+  ~ provenance.generation_command: "D:\\Projects\\Tollgate\\eval\\harness.py --split all --seed 42 --corpus-db data/corpus/tollgate.db --model-dir models --out eval/outputs" -> "D:\\Projects\\Tollgate\\eval\\harness.py --split all --seed 42 --corpus-db data/corpus/tollgate.db --model-dir models/ --out C:/Users/sehaj/AppData/Local/Temp/claude/D--Projects-Tollgate/09bf943d-adb1-4cfe-8186-adabd5ff681c/scratchpad/d6a"
+
+2 substantive difference(s) [added 0, removed 0, changed 2] after ignoring 4 prefix(es)
+# ignoring: provenance
+
+0 substantive difference(s) [added 0, removed 0, changed 0] after ignoring 1 prefix(es)

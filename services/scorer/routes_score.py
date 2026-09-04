@@ -35,6 +35,7 @@ from packages.contracts.wire import ScoreRequest, ScoreResponse
 from packages.detect.policy import apply_auto_ceiling
 from packages.features.compute import FEATURE_NAMES, classify_ua, ipua_key
 from services.scorer.auth import AuthBackendUnavailable, resolve_merchant_id_cached
+from services.scorer.demo import demo_controls_enabled
 from services.scorer.deps import ScorerState, get_scorer_state
 from services.scorer.net import resolve_client_ip
 from services.scorer.scoring import score_attempt
@@ -263,6 +264,14 @@ async def score(
 
     # -- full path, wrapped for fail-open ----------------------------------
     try:
+        # Source: Day 9 Plan Phase 3 step 8 -- the in-scorer fault injector.
+        # Inert unless BOTH the env gate and the runtime toggle are set (the
+        # toggle is only reachable via routes_demo.py, itself 404 without the
+        # env gate), so normal / production behaviour is untouched. Raising
+        # here drives the identical `except -> _fail_open` path a real
+        # score_attempt() fault would.
+        if getattr(state, "demo_fault", False) and demo_controls_enabled():
+            raise RuntimeError("demo fault injection (TOLLGATE_DEMO_CONTROLS + /v1/demo/fault)")
         result, _event = await score_attempt(
             state, merchant_id=merchant_id, ip=ip, body=body,
             stopwatch=stopwatch, user_agent=user_agent,

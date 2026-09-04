@@ -1,0 +1,34 @@
+# Source: Day 9 Plan Phase 2 -- keep the build context small. The repo is
+# bind-mounted into every service at runtime (dev-parity), so almost nothing
+# needs to enter an image. Only pyproject.toml / uv.lock (scorer image) and the
+# two frontend package manifests (frontend images) are COPYed in.
+
+.git/
+.venv/
+**/node_modules/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+.verify60x/
+.superpowers/
+.worktrees/
+
+# Large host-side state (bind-mounted at runtime, never imaged)
+data/
+spool/
+models/
+tollgate.db
+tollgate.db-shm
+tollgate.db-wal
+*.log
+
+# Frontend build/test output
+services/*/dist/
+services/dashboard/playwright-report/
+services/dashboard/blob-report/
+services/dashboard/test-results/
+services/dashboard/coverage/
+
+# Day 9 evidence + docs (not needed in any image)
+evidence/
+*.md

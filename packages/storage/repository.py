@@ -332,14 +332,27 @@ def _truncate_key(entity_type: str, entity_key: str) -> str:
     return entity_key[:8] + "…" if len(entity_key) > 8 else entity_key
 
 
-def read_open_incidents(conn: sqlite3.Connection, merchant_id: str) -> list:
-    """Newest-first live (non-CLOSED) incidents for the merchant -- drives the
-    nav's Incidents item (which routes straight to D3 for the newest)."""
+def read_open_incidents(
+    conn: sqlite3.Connection, merchant_id: str, state: str = "live"
+) -> list:
+    """Newest-first incidents for the merchant -- drives the nav's Incidents
+    item (which routes straight to D3 for the newest).
+
+    `state`: "live" (default, non-CLOSED) / "closed" / "all". DEF-D9-006: the
+    HTTP `?state=` filter used to be dropped; it is honoured here now. The
+    caller validates the value (route Literal), so an unknown value falls
+    through to the "live" predicate rather than raising.
+    """
+    where = {
+        "live": "AND state != 'CLOSED'",
+        "closed": "AND state = 'CLOSED'",
+        "all": "",
+    }.get(state, "AND state != 'CLOSED'")
     rows = conn.execute(
-        """
+        f"""
         SELECT incident_id, state, detector, opened_at, peak_tier
         FROM incident
-        WHERE merchant_id = ? AND state != 'CLOSED'
+        WHERE merchant_id = ? {where}
         ORDER BY opened_at DESC
         """,
         (merchant_id,),

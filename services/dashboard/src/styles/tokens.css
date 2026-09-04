@@ -26,7 +26,12 @@
   /* Text */
   --tg-text:          #F2F5F8;
   --tg-text-2:        #A7B0BC;
-  --tg-text-mute:     #6E7885;
+  /* METRICS-REMEDIATION-PLAN §21.1 (M-023): #6E7885 was 4.34:1 on the canvas --
+     below WCAG AA -- and it styles every caption, the provenance line, the SVG
+     axis labels and every `n/a` value. Lightened to #8B95A3 (~5.9:1); still the
+     lowest step in the text hierarchy (#F2F5F8 > #A7B0BC > #8B95A3). Fixes D1
+     and D3 too. */
+  --tg-text-mute:     #8B95A3;
 
   /* Interactive -- indigo, and only indigo (UIUX v2 SS2.1). */
   --tg-primary:       #6366F1;

@@ -7,6 +7,7 @@ import App from "./App.jsx";
 import "./styles/tokens.css";
 import "./styles/type.css";
 import "./styles/base.css";
+import "./styles/metrics.css";
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>

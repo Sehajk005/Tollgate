@@ -1,4 +1,4 @@
-import { THREAT_LABELS, THREAT_GLYPHS, THREAT_TOKENS } from "../lib/labels.js";
+import { THREAT_LABELS, THREAT_GLYPHS, THREAT_TOKENS, THREAT_WASH_TOKENS } from "../lib/labels.js";
 
 // Day 8, Step 3 -- D1 threat band (UIUX v2 SS6.1). Full width, top of every
 // screen (it is the "global threat indicator" of D0's shell, App Flow SS5).
@@ -48,7 +48,8 @@ export default function ThreatBand({ threatState = "calm", regime = "in_control"
   const label = THREAT_LABELS[state];
   const glyph = THREAT_GLYPHS[state];
   const showRegime = regime === "alarm";
-  const wash = state === "calm" ? "transparent" : `var(${token})1A`;
+  // FIX-018: a defined token, never string concatenation onto a var() call.
+  const wash = `var(${THREAT_WASH_TOKENS[state]})`;
 
   return (
     <div
@@ -58,7 +59,7 @@ export default function ThreatBand({ threatState = "calm", regime = "in_control"
         alignItems: "center",
         gap: 12,
         padding: showRegime ? "12px 24px 16px" : "16px 24px",
-        background: state === "calm" ? "var(--tg-surface-1)" : wash,
+        background: wash,
         borderLeft: `3px solid var(${token})`,
         borderBottom: "1px solid var(--tg-hairline)",
       }}

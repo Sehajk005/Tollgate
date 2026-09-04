@@ -1,0 +1,2 @@
+config: loaded environment from D:\Projects\Tollgate\.env
+config: GEMINI_API_KEY is set but NARRATOR_BACKEND is 'template', not 'gemini' -- the key is unused

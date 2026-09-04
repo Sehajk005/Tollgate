@@ -1,0 +1,67 @@
+{
+  "faulthandler": true,
+  "redis": "redis://localhost:6379/9",
+  "gates": [
+    {
+      "gate": "60x",
+      "runs": [
+        {
+          "run_index": 0,
+          "run_id": "01M1KP4P85QWHRAFASC0MMZFK8",
+          "state": "finished",
+          "sent": 821,
+          "total": 821,
+          "wall_s": 130.43,
+          "checkout_injected": true,
+          "error": null
+        },
+        {
+          "run_index": 1,
+          "run_id": "01M1KP8PA284X2P7644R6753RE",
+          "state": "finished",
+          "sent": 821,
+          "total": 821,
+          "wall_s": 129.65,
+          "checkout_injected": true,
+          "error": null
+        },
+        {
+          "run_index": 2,
+          "run_id": "01M1KPCNNTH3FQPF381F3PM6Z9",
+          "state": "finished",
+          "sent": 821,
+          "total": 821,
+          "wall_s": 129.46,
+          "checkout_injected": true,
+          "error": null
+        }
+      ],
+      "faulthandler": true,
+      "health_p99_ms": 16.9,
+      "health_max_ms": 240.8,
+      "health_failures": 0,
+      "loop_lag_warnings": [],
+      "loop_lag_max_s": 0.0,
+      "discontinuity_warnings": 6,
+      "rss_start_mb": 3.2,
+      "rss_end_mb": 0.3,
+      "rss_growth_mb": -2.9,
+      "exit_code": 1,
+      "drainer_alive": true,
+      "checks": {
+        "all_runs_finished": true,
+        "exact_terminal_counts": true,
+        "checkout_interleaved": true,
+        "zero_failed_runs": true,
+        "health_responsive": true,
+        "loop_lag_under_2s": true,
+        "rss_growth_ok": true,
+        "no_crash": true,
+        "drainer_alive": true
+      },
+      "pass": true,
+      "elapsed_s": 406.1
+    }
+  ],
+  "pass": true
+}

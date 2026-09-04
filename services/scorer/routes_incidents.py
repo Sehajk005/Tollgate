@@ -3,7 +3,9 @@ Source: Day-8 Plan Step 6 -- the D3 backend. The only genuinely new backend
 surface in Day 8. Everything it exposes already exists in SQLite; nothing
 recomputes.
 
-  GET  /v1/incidents?state=live       -- newest live incident ids for the merchant
+  GET  /v1/incidents?state=live       -- newest incident ids for the merchant;
+                                        state in {live (default, non-CLOSED),
+                                        closed, all} -- any other value -> 422
   GET  /v1/incidents/{id}             -- the full D3 read model (pseudonyms +
                                         truncated real keys; never a PAN, never
                                         a full card hash -- UIUX v2 §6.8)
@@ -27,7 +29,7 @@ are never retroactively changed.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
@@ -72,14 +74,17 @@ def _auth(state: ScorerState, key: Optional[str]) -> str:
 
 @router.get("/v1/incidents")
 async def list_incidents(
-    state: str = "live",
+    state: Literal["live", "closed", "all"] = "live",
     x_tollgate_key: Optional[str] = Header(default=None, alias="X-Tollgate-Key"),
     scorer: ScorerState = Depends(get_scorer_state),
 ) -> dict:
+    # DEF-D9-006: `state` used to be an unvalidated str that was never forwarded
+    # -- ?state=closed and ?state=bogus returned the identical live list. It is
+    # now a closed set (422 otherwise) and read_open_incidents applies it.
     merchant_id = _auth(scorer, x_tollgate_key)
     conn = connect(scorer.db_path, read_only=True)
     try:
-        rows = read_open_incidents(conn, merchant_id)
+        rows = read_open_incidents(conn, merchant_id, state=state)
     finally:
         conn.close()
     return {"incidents": rows}

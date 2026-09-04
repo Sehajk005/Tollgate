@@ -1,0 +1,215 @@
+{
+  "findings": [
+    {
+      "check": "body field `decision:block` is not echoed / applied",
+      "verdict": "PASS",
+      "detail": "response decision=allow (must be a server decision, not injected 'block')",
+      "s5_critical": true
+    },
+    {
+      "check": "merchant identity from key only",
+      "verdict": "PASS",
+      "detail": "persisted merchant_id='merchant_demo' (body said 'attacker-merchant')",
+      "s5_critical": true
+    },
+    {
+      "check": "attempts_per_ip_60s not taken from body",
+      "verdict": "PASS",
+      "detail": "feature_snapshot.attempts_per_ip_60s=1 (body said 999999)",
+      "s5_critical": true
+    },
+    {
+      "check": "score_calibrated not taken from body",
+      "verdict": "PASS",
+      "detail": "persisted score_calibrated=9.57405916014226e-05 (body said 0.999)",
+      "s5_critical": true
+    },
+    {
+      "check": "attempt_uid server-minted, not body-derived",
+      "verdict": "PASS",
+      "detail": "attempt_uid=01M1KK116W2E9B98QMR002RQSR",
+      "s5_critical": true
+    },
+    {
+      "check": "rules_fired not taken from body ['R1','R2','R3']",
+      "verdict": "PASS",
+      "detail": "persisted rules_fired=[]",
+      "s5_critical": true
+    },
+    {
+      "check": "no PAN / cvv key persisted in the joined row",
+      "verdict": "PASS",
+      "detail": "searched auth_attempt+attempt_score row for the injected PAN / a cvv key",
+      "s5_critical": true
+    },
+    {
+      "check": "body `card_hash` IS stored verbatim (expected: it is a client-supplied opaque hash, not a feature)",
+      "verdict": "PASS",
+      "detail": "persisted card_hash='HASHMARK66e3544db17744988f1e7e2aabb95155' -- opaque identifier, never a model/feature input",
+      "s5_critical": false
+    },
+    {
+      "check": "XFF from a NON-edge peer is IGNORED",
+      "verdict": "PASS",
+      "detail": "redis container (172.28.0.x, not .11/.12) sent XFF 203.0.113.111 -> persisted ip='172.28.0.20'",
+      "s5_critical": true
+    },
+    {
+      "check": "XFF from the declared edge IS honoured (intended, Threat Model K8)",
+      "verdict": "PASS",
+      "detail": "storefront Vite proxy (declared edge 172.28.0.11) -> persisted ip='198.51.100.77'",
+      "s5_critical": false
+    },
+    {
+      "check": "SSE events carry no `card_hash` key (Decision 34)",
+      "verdict": "PASS",
+      "detail": "scanned 200 recent SSE events for a card_hash key",
+      "s5_critical": true
+    },
+    {
+      "check": "SSE events do not echo the injected HASH marker",
+      "verdict": "PASS",
+      "detail": "scanned recent SSE payloads for the trust-probe marker",
+      "s5_critical": false
+    },
+    {
+      "check": "scorer logs do not contain the injected PAN",
+      "verdict": "PASS",
+      "detail": "grepped `docker compose logs scorer`",
+      "s5_critical": false
+    },
+    {
+      "check": "scorer logs do not contain the injected card_hash marker",
+      "verdict": "PASS",
+      "detail": "grepped scorer logs for HASH<marker>",
+      "s5_critical": false
+    },
+    {
+      "check": "hostile 10KB unicode event_id",
+      "verdict": "PASS",
+      "detail": "status=200 (200 or 422, never 5xx)",
+      "s5_critical": false
+    },
+    {
+      "check": "hostile RTL + control chars session_id",
+      "verdict": "PASS",
+      "detail": "status=200 (200 or 422, never 5xx)",
+      "s5_critical": false
+    },
+    {
+      "check": "hostile prompt-injection-shaped session_id",
+      "verdict": "PASS",
+      "detail": "status=200 (200 or 422, never 5xx)",
+      "s5_critical": false
+    },
+    {
+      "check": "hostile CRLF-ish event_id",
+      "verdict": "PASS",
+      "detail": "status=200 (200 or 422, never 5xx)",
+      "s5_critical": false
+    },
+    {
+      "check": "outcome happy path (valid HMAC, fresh nonce, real event)",
+      "verdict": "WARN",
+      "detail": "status=401 body={\"detail\":\"stale\"} (WARN if virtual clock is far from wall time)",
+      "s5_critical": false
+    },
+    {
+      "check": "outcome replayed nonce -> 409",
+      "verdict": "PASS",
+      "detail": "status=401",
+      "s5_critical": false
+    },
+    {
+      "check": "outcome unknown event_id -> 404",
+      "verdict": "PASS",
+      "detail": "status=401",
+      "s5_critical": false
+    },
+    {
+      "check": "outcome tampered body -> 401",
+      "verdict": "PASS",
+      "detail": "status=401",
+      "s5_critical": false
+    },
+    {
+      "check": "outcome stale timestamp -> 401",
+      "verdict": "PASS",
+      "detail": "status=401",
+      "s5_critical": false
+    },
+    {
+      "check": "outcome unsigned -> 401",
+      "verdict": "PASS",
+      "detail": "status=401",
+      "s5_critical": false
+    },
+    {
+      "check": "POST /v1/replay/start without key -> 401",
+      "verdict": "PASS",
+      "detail": "status=401",
+      "s5_critical": false
+    },
+    {
+      "check": "POST /v1/replay/stop without key -> 401",
+      "verdict": "PASS",
+      "detail": "status=401",
+      "s5_critical": false
+    },
+    {
+      "check": "POST /v1/replay/reset without key -> 401",
+      "verdict": "PASS",
+      "detail": "status=401",
+      "s5_critical": false
+    },
+    {
+      "check": "GET /v1/replay/status open (Decision 107)",
+      "verdict": "PASS",
+      "detail": "",
+      "s5_critical": false
+    },
+    {
+      "check": "GET /v1/incidents without key -> 401",
+      "verdict": "PASS",
+      "detail": "status=401",
+      "s5_critical": false
+    },
+    {
+      "check": "GET /v1/incidents/x without key -> 401",
+      "verdict": "PASS",
+      "detail": "status=401",
+      "s5_critical": false
+    },
+    {
+      "check": "POST /v1/incidents/x/confirm without key -> 401",
+      "verdict": "FAIL",
+      "detail": "status=422",
+      "s5_critical": false
+    },
+    {
+      "check": "POST /v1/incidents/x/resolve without key -> 401",
+      "verdict": "FAIL",
+      "detail": "status=422",
+      "s5_critical": false
+    },
+    {
+      "check": "SQLi-shaped key -> 4xx not 200/5xx",
+      "verdict": "PASS",
+      "detail": "status=401",
+      "s5_critical": false
+    },
+    {
+      "check": "64KB key -> 4xx not 200/5xx",
+      "verdict": "PASS",
+      "detail": "status=401",
+      "s5_critical": false
+    },
+    {
+      "check": "newline key",
+      "verdict": "WARN",
+      "detail": "client raised LocalProtocolError(\"Illegal header value b'a\\\\nb'\") (oversized header rejected pre-send)",
+      "s5_critical": false
+    }
+  ],
+  "s5_hits": []
+}

@@ -1,21 +1,66 @@
+import { useMemo } from "react";
+
 import d6 from "../../../../eval/outputs/d6.json";
-import BarRow from "../components/charts/BarRow.jsx";
-import AuditBars from "../components/charts/AuditBars.jsx";
+import { parseArtifact } from "../lib/d6Contract.js";
+import { buildMetricsModel } from "../lib/metricsModel.js";
+import { count as fmtCount } from "../lib/format.js";
+import Block1PerTier from "../components/metrics/Block1PerTier.jsx";
+import Block2NegativeControls from "../components/metrics/Block2NegativeControls.jsx";
 import CostCurve from "../components/charts/CostCurve.jsx";
+import AuditBars from "../components/charts/AuditBars.jsx";
+import Block5Calibration from "../components/metrics/Block5Calibration.jsx";
+import Block6Baselines from "../components/metrics/Block6Baselines.jsx";
+import ProvenanceHeader from "../components/metrics/ProvenanceHeader.jsx";
+import MethodologyPanel from "../components/metrics/MethodologyPanel.jsx";
 
-// Day 8, Step 5 -- D6 Metrics & Evaluation (App Flow SS5 D6). Six blocks,
+// D6 -- Metrics & Evaluation (App Flow §5 D6). Six blocks, in argument order,
 // rendered from a BUILD-TIME `import` of the committed artifact
-// `eval/outputs/d6.json`. No network call, no live subscription, no runtime
-// data path to remove: this is the strongest possible form of "zero live
-// computation" (App Flow SS5: "Static render. No live computation on stage.").
-// Pinned by tests/acceptance/test_d6_static.py.
+// eval/outputs/d6.json -- no network call, no live subscription (App Flow §5:
+// "Static render. No live computation on stage.").
+//
+// Remediation (METRICS-REMEDIATION-PLAN-2026-09-02.md §7): the screen is a
+// COMPOSITION over `buildMetricsModel(parseArtifact(artifact))`, not a curator
+// that hand-picks fields. `parseArtifact` runs INSIDE render (useMemo) so a
+// malformed artifact throws an `ArtifactContractError` that <MetricsErrorBoundary>
+// catches -- it never crashes the module or the shell.
+//
+// Blocks referenced via the view model: block1_per_tier, block2_negative_controls,
+// block3_audit, block4_cost, block5_calibration, block6_baselines (+ provenance,
+// tier_e). Every block is a dedicated, individually-tested component.
 
-const TIERS = ["easy", "medium", "hard", "evasive"];
+// §17.2 -- the current working tree's config_hash, injected at build time by a
+// Vite `define` (vite.config.js). `null` in a bare build with no Python -> the
+// page discloses "freshness not verifiable", never a false "current".
+const CURRENT_CONFIG_HASH =
+  typeof __TG_CONFIG_HASH__ !== "undefined" ? __TG_CONFIG_HASH__ : null;
+
+function ExecutiveSummary({ summary }) {
+  return (
+    <section
+      aria-label="Executive summary"
+      style={{
+        margin: "16px 0 24px",
+        padding: "12px 16px",
+        borderLeft: "2px solid var(--tg-hairline-firm)",
+        background: "var(--tg-surface-1)",
+      }}
+    >
+      <h2 className="tg-label" style={{ margin: "0 0 8px", color: "var(--tg-text-2)" }}>
+        Executive summary
+      </h2>
+      {summary.map((s) => (
+        <p key={s.id} className="tg-body" style={{ margin: "0 0 6px", color: "var(--tg-text)" }}>
+          {s.text}
+        </p>
+      ))}
+    </section>
+  );
+}
 
 function Section({ n, title, children }) {
   return (
-    <section style={{ marginBottom: 28 }}>
-      <h2 className="tg-display-sm" style={{ margin: "0 0 4px" }}>
+    <section style={{ marginBottom: 32, borderTop: "1px solid var(--tg-hairline)", paddingTop: 12 }}>
+      <h2 className="tg-display-sm" style={{ margin: "0 0 6px" }}>
         {n}. {title}
       </h2>
       {children}
@@ -23,139 +68,62 @@ function Section({ n, title, children }) {
   );
 }
 
-function Block1() {
-  const model = d6.block1_per_tier["l1-lgbm-v1"] || {};
-  const b0 = d6.block1_per_tier["rules-only-v0"] || {};
-  const recall = (tm) => (tm && tm.recall_at_target_fpr ? tm.recall_at_target_fpr.value : null);
+
+function TierEFooter({ tierE }) {
+  const c = tierE.convergedParams;
   return (
-    <>
-      <p className="tg-caption" style={{ color: "var(--tg-text-mute)" }}>
-        recall @ FPR 1e-3 per tier. The evasive bar gets no special treatment — it is simply the
-        fourth bar, at whatever height it is (UIUX v2 SS6.13).
-      </p>
-      <div className="tg-label" style={{ color: "var(--tg-text-2)", margin: "8px 0 2px" }}>l1-lgbm-v1</div>
-      {TIERS.map((t) => (
-        <BarRow key={`m-${t}`} label={t} value={recall(model[t])} max={1} />
-      ))}
-      <div className="tg-label" style={{ color: "var(--tg-text-2)", margin: "10px 0 2px" }}>B0 — live rules</div>
-      {TIERS.map((t) => (
-        <BarRow key={`b0-${t}`} label={t} value={recall(b0[t])} max={1} />
-      ))}
-    </>
+    <p className="tg-caption" style={{ color: "var(--tg-text-mute)" }}>
+      Tier E (adaptive adversary): split n = {fmtCount(tierE.splitN)}, prevalence{" "}
+      {tierE.prevalence == null ? "n/a" : tierE.prevalence.toFixed(3)}
+      {c ? ` · ${c.ipPoolSize} IPs, ${c.binPoolSize} BINs, ${c.attemptsPerHour}/h` : ""}.
+    </p>
   );
 }
 
-function Block2() {
-  const rows = d6.block2_negative_controls;
-  return (
-    <table className="tg-mono-data tg-num" style={{ borderCollapse: "collapse", width: "100%" }}>
-      <thead>
-        <tr className="tg-label">
-          <th style={{ textAlign: "left", padding: "4px 8px" }}>scenario</th>
-          <th style={{ textAlign: "left", padding: "4px 8px" }}>scorer</th>
-          <th style={{ textAlign: "right", padding: "4px 8px" }}>episode FP</th>
-          <th style={{ textAlign: "right", padding: "4px 8px" }}>attempt FP</th>
-        </tr>
-      </thead>
-      <tbody>
-        {Object.entries(rows).flatMap(([scenario, list]) =>
-          list.map((r, i) => (
-            <tr key={`${scenario}-${r.scorer}`} style={{ borderTop: "1px solid var(--tg-hairline)" }}>
-              <td style={{ padding: "4px 8px", color: "var(--tg-text-2)" }}>{i === 0 ? scenario : ""}</td>
-              <td style={{ padding: "4px 8px" }}>{r.scorer}</td>
-              <td style={{ padding: "4px 8px", textAlign: "right" }}>{r.episode_fp}/{r.episodes}</td>
-              <td style={{ padding: "4px 8px", textAlign: "right" }}>{r.attempt_fp}/{r.attempts}</td>
-            </tr>
-          ))
-        )}
-      </tbody>
-    </table>
+export default function D6Metrics({ artifact = d6, currentConfigHash = CURRENT_CONFIG_HASH } = {}) {
+  const model = useMemo(
+    () => buildMetricsModel(parseArtifact(artifact), { currentConfigHash }),
+    [artifact, currentConfigHash],
   );
-}
 
-function Block5() {
-  const cb = d6.block5_calibration;
-  if (!cb || !cb.pi0) return <p className="tg-caption">not measured in this artifact.</p>;
-  const row = (label, r) => (
-    <tr style={{ borderTop: "1px solid var(--tg-hairline)" }}>
-      <td style={{ padding: "4px 8px", color: "var(--tg-text-2)" }}>{label}</td>
-      <td style={{ padding: "4px 8px", textAlign: "right" }}>{r.brier_platt?.toFixed(4)}</td>
-      <td style={{ padding: "4px 8px", textAlign: "right" }}>{r.brier_platt_prior?.toFixed(4)}</td>
-      <td style={{ padding: "4px 8px", textAlign: "right" }}>{r.ece_platt?.toFixed(4)}</td>
-      <td style={{ padding: "4px 8px", textAlign: "right" }}>{r.ece_platt_prior?.toFixed(4)}</td>
-    </tr>
-  );
   return (
-    <table className="tg-mono-data tg-num" style={{ borderCollapse: "collapse", width: "100%" }}>
-      <thead>
-        <tr className="tg-label">
-          <th style={{ textAlign: "left", padding: "4px 8px" }}>regime</th>
-          <th style={{ textAlign: "right", padding: "4px 8px" }}>Brier Platt</th>
-          <th style={{ textAlign: "right", padding: "4px 8px" }}>Brier Platt+prior</th>
-          <th style={{ textAlign: "right", padding: "4px 8px" }}>ECE Platt</th>
-          <th style={{ textAlign: "right", padding: "4px 8px" }}>ECE Platt+prior</th>
-        </tr>
-      </thead>
-      <tbody>
-        {row("π₀ = 0.001 (steady state)", cb.pi0)}
-        {row("π₁ = 0.9 (under attack)", cb.pi1)}
-      </tbody>
-    </table>
-  );
-}
-
-function Block6() {
-  const b = d6.block6_baselines;
-  return (
-    <>
-      {b.b0 && (
-        <BarRow
-          label="B0 — live rules"
-          value={b.b0.recall_at_target_fpr?.value}
-          max={1}
-          valueText={`recall ${b.b0.recall_at_target_fpr?.value == null ? "n/a" : b.b0.recall_at_target_fpr.value.toFixed(3)}`}
-        />
-      )}
-      {b.b1 && <BarRow label="B1 — decline-velocity" value={b.b1.tpr} max={1} valueText={`TPR ${b.b1.tpr.toFixed(3)}`} />}
-      {b.b2 && <BarRow label="B2 — BIN-concentration" value={b.b2.tpr} max={1} valueText={`TPR ${b.b2.tpr.toFixed(3)}`} />}
-      <p className="tg-caption" style={{ color: "var(--tg-text-mute)", marginTop: 6 }}>
-        B2 shares R3's statistic, so B0 already contains it. B1 needs completed outcomes the pre-auth
-        path never has at decision time.
-      </p>
-    </>
-  );
-}
-
-export default function D6Metrics() {
-  const te = d6.tier_e || {};
-  return (
-    <div style={{ padding: 24, maxWidth: 900 }}>
+    <div className="tg-metrics" style={{ padding: 24, maxWidth: 1280, margin: "0 auto" }}>
       <h1 className="tg-display-md" style={{ margin: "0 0 4px" }}>Metrics &amp; Evaluation</h1>
-      <p className="tg-mono-caption" style={{ color: "var(--tg-text-mute)" }}>
-        static render · build {d6.provenance.build_hash?.slice(0, 12)} · config{" "}
-        {d6.provenance.config_hash?.slice(0, 12)} · seed {d6.provenance.seed} · model{" "}
-        {d6.provenance.model_version}
-      </p>
+      <ProvenanceHeader
+        provenance={model.provenance}
+        freshness={model.freshness}
+        primarySplit={model.block4.split || "temporal_test"}
+      />
 
-      <Section n={1} title="Per-tier performance"><Block1 /></Section>
-      <Section n={2} title="Negative-control false positives"><Block2 /></Section>
+      <ExecutiveSummary summary={model.summary} />
+
+      <Section n={1} title="Per-tier performance">
+        <Block1PerTier block1={model.block1} />
+      </Section>
+      <Section n={2} title="Negative-control false positives">
+        <Block2NegativeControls block2={model.block2} />
+      </Section>
       <Section n={3} title="Discriminability audit">
-        <AuditBars features={d6.block3_audit.features || {}} />
+        <AuditBars block3={model.block3} />
       </Section>
       <Section n={4} title="Cost curves">
-        <CostCurve b4={d6.block4_cost} />
+        <CostCurve block4={model.block4} />
       </Section>
-      <Section n={5} title="Calibration"><Block5 /></Section>
-      <Section n={6} title="Baseline comparison"><Block6 /></Section>
+      <Section n={5} title="Calibration">
+        <Block5Calibration block5={model.block5} />
+      </Section>
+      <Section n={6} title="Baseline comparison">
+        <Block6Baselines block6={model.block6} />
+      </Section>
 
-      <p className="tg-caption" style={{ color: "var(--tg-text-mute)" }}>
-        Tier E (adaptive adversary): split n={te.split_n}, prevalence{" "}
-        {te.prevalence == null ? "n/a" : te.prevalence.toFixed(3)}
-        {te.converged_params
-          ? ` · ${te.converged_params.ip_pool_size} IPs, ${te.converged_params.bin_pool_size} BINs, ${te.converged_params.attempts_per_hour}/h`
-          : ""}
-        .
-      </p>
+      <TierEFooter tierE={model.tierE} />
+
+      <MethodologyPanel
+        provenance={model.provenance}
+        block3={model.block3}
+        block5={model.block5}
+        tierE={model.tierE}
+      />
     </div>
   );
 }

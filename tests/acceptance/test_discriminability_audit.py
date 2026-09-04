@@ -80,6 +80,29 @@ class TestDiscriminabilityAudit:
                 "and not excluded"
             )
 
+    def test_committed_artifact_separability_agrees_with_recomputed_auc(self, day5_corpus):
+        # Source: plan FIX-BE-05 / §24.4 -- the DERIVED fields in the committed
+        # d6.json (separability, direction) must be consistent with a fresh,
+        # independent AUC recompute from the corpus, not just with audit.json.
+        import json
+        from pathlib import Path
+
+        recomputed, _ = _recomputed_audit(day5_corpus)
+        b3 = json.loads(
+            (Path(__file__).resolve().parents[2] / "eval" / "outputs" / "d6.json")
+            .read_text(encoding="utf-8")
+        )["block3_audit"]
+        for name, feat in b3["features"].items():
+            fresh_auc = recomputed["features"][name]["univariate_auc"]
+            if fresh_auc is None:
+                continue
+            assert abs(feat["univariate_auc"] - fresh_auc) < 0.02, name
+            assert abs(feat["separability"] - abs(feat["univariate_auc"] - 0.5)) < 1e-12, name
+            expect_dir = None if feat["constant"] else (
+                "inverted" if feat["univariate_auc"] < 0.5 else "positive"
+            )
+            assert feat["direction"] == expect_dir, name
+
     def test_every_excluded_feature_has_a_reason_and_a_measured_auc(self, day5_corpus):
         cfg = _features_config()
         assert cfg["excluded"], "audit.excluded is empty -- test would be vacuous on this corpus"

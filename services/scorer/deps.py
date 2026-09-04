@@ -138,6 +138,14 @@ class ScorerState:
     # ScorerState(...) construction is unaffected.
     gemini_tasks: set = field(default_factory=set)
     gemini_transport: object = None
+    # Source: Day 9 Plan Phase 3 -- J6 steps 7 & 8 demo controls. Both inert by
+    # default and only reachable via routes_demo.py, which itself 404s unless
+    # TOLLGATE_DEMO_CONTROLS=1. `demo_fault` True -> the /v1/score handler
+    # raises before score_attempt(), driving the real _fail_open path.
+    # `demo_flood` holds the running DemoFloodRunner (a real concurrent load
+    # against /v1/score), None when idle.
+    demo_fault: bool = False
+    demo_flood: object = None
 
     def db_read_conn(self):
         return connect(self.db_path)
@@ -306,10 +314,21 @@ class ScorerState:
 
     @staticmethod
     def build_default(
-        db_path: Path = Path("tollgate.db"),
-        spool_dir: Path = Path("spool"),
+        db_path: "Path | None" = None,
+        spool_dir: "Path | None" = None,
         model_dir: Path = DEFAULT_MODEL_DIR,
     ) -> "ScorerState":
+        # Day 9 Plan Phase 2: the containerized deployment puts the MUTABLE demo
+        # DB + spool on a Linux-native volume, because SQLite in WAL mode cannot
+        # mmap its -shm file over a Docker Desktop Windows bind mount (a fresh
+        # read/write connection then fails with "unable to open database file").
+        # TOLLGATE_DB_PATH / TOLLGATE_SPOOL_DIR select that location; an explicit
+        # argument (the durability / lock-contention test runner) still wins, and
+        # with neither the defaults are byte-identical to before.
+        if db_path is None:
+            db_path = Path(os.environ.get("TOLLGATE_DB_PATH", "tollgate.db"))
+        if spool_dir is None:
+            spool_dir = Path(os.environ.get("TOLLGATE_SPOOL_DIR", "spool"))
         clock = SystemClock()
         ulid = UlidGenerator(clock=clock, rng=random.Random())
         window_store = ScorerState._build_window_store()

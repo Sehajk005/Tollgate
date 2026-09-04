@@ -31,6 +31,20 @@ export const THREAT_TOKENS = {
   resolved: "--tg-resolved",
 };
 
+// Remediation plan FIX-018 (AUDIT-018) -- the band's background WASH.
+// ThreatBand built it as `var(${token})1A`, which produces the literal string
+// "var(--tg-attack)1A": not a colour, so the browser dropped the declaration
+// and the band rendered with no wash at all in every non-calm state. The
+// low-alpha tokens it needed already existed in tokens.css; this maps to them.
+// No new token, no color-mix() dependency, and colour stays non-load-bearing
+// (UIUX v2 SS2.5) -- the label and glyph carry the state.
+export const THREAT_WASH_TOKENS = {
+  calm: "--tg-surface-1",
+  elevated: "--tg-elevated-wash",
+  under_attack: "--tg-attack-wash",
+  resolved: "--tg-resolved-wash",
+};
+
 // Decision tier -> stream-rail / ticker stripe colour token. Monitoring is
 // neutral grey, never blue (UIUX v2 SS2.1).
 export const TIER_TOKENS = {

@@ -13,6 +13,7 @@ merchant DB dependency, so this module only ever writes the markdown file.
 
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Sequence
 
@@ -23,7 +24,26 @@ from packages.features.compute import FEATURE_NAMES
 
 MODEL_ROW_VERSIONS = ("l1-lgbm-v1", "rules-only-v0")
 
-THETA_CHALLENGE = 0.257  # report block 2's episode/attempt-FP threshold (the auto-ceiling tier)
+
+@lru_cache(maxsize=1)
+def theta_challenge() -> float:
+    """Block 2's episode/attempt-FP threshold: theta_T = C_FP(T)/(C_FP(T)+C_FN)
+    for the auto-ceiling tier `challenge`, read UNROUNDED from the cost model
+    (`1800 / (1800 + 5200)`).
+
+    Source: METRICS-REMEDIATION-PLAN-2026-09-02.md FIX-BE-01 / M-020. Replaces
+    the former hand-typed rounded constant, which was rounded *down*
+    (marginally more permissive than the model implies) and contradicted
+    `CostModel.tier_ladder()`'s own "UNROUNDED -- callers round for display,
+    never for comparison" discipline. One authoritative source per semantic
+    value (RC-2)."""
+    return load_cost_model().tier_ladder()[COST_TIER]
+
+
+# Deprecated module-level alias, computed once at import for one release so no
+# importer breaks while call sites migrate to theta_challenge(). Do not add new
+# uses. (plan FIX-BE-01)
+THETA_CHALLENGE = theta_challenge()
 SANITY_SCORER_ORDER = ("perfect", "random", "inverted", "always_positive")
 SANITY_SCORER_LABEL = {
     "perfect": "PerfectScorer", "random": "RandomScorer",
@@ -48,7 +68,9 @@ def _fmt_recall(recall) -> str:
         return f"unreachable (n_neg={recall.n_neg}, resolvable={recall.resolvable})"
     resolvable = "resolvable" if recall.resolvable else "UNRESOLVABLE (too few negatives)"
     ci = f"[{_fmt(recall.ci_low)}, {_fmt(recall.ci_high)}]" if recall.ci_low is not None else "n/a"
-    return f"{_fmt(recall.value)} (95% CI {ci}, n_neg={recall.n_neg}, {resolvable})"
+    # Source: plan FIX-BE-05 / M-040 -- the interval is Wilson on the ACHIEVED
+    # FPR (metrics.py `_wilson_interval(best_fp, n_neg)`), not on recall.
+    return f"{_fmt(recall.value)} (95% CI on achieved FPR {ci}, n_neg={recall.n_neg}, {resolvable})"
 
 
 def _provenance_header(report: Report) -> List[str]:
@@ -294,8 +316,9 @@ def _episode_and_attempt_fp(split_samples, scores, threshold: float) -> tuple:
 def _block2_negative_controls(run: HarnessRun) -> List[str]:
     from eval.scorers import AlwaysPositiveScorer, InvertedScorer, PerfectScorer, RandomScorer
 
+    theta = theta_challenge()
     lines = ["## Block 2 -- Negative controls, per scenario", ""]
-    lines.append(f"Episode-level FP threshold: score >= theta_challenge = {THETA_CHALLENGE} (the auto-ceiling tier).")
+    lines.append(f"Episode-level FP threshold: score >= theta_challenge = {theta} (the auto-ceiling tier).")
     lines.append("")
 
     sanity_scorers = {
@@ -319,7 +342,7 @@ def _block2_negative_controls(run: HarnessRun) -> List[str]:
         lines.append("|---|---|---|")
         for key in SANITY_SCORER_ORDER:
             scores = [sanity_scorers[key](s) for s in split.samples]
-            n_ep_fp, n_ep, n_att_fp, n_att = _episode_and_attempt_fp(split.samples, scores, THETA_CHALLENGE)
+            n_ep_fp, n_ep, n_att_fp, n_att = _episode_and_attempt_fp(split.samples, scores, theta)
             lines.append(f"| {SANITY_SCORER_LABEL[key]} | {n_ep_fp}/{n_ep} | {n_att_fp}/{n_att} |")
         lines.append("")
     return lines

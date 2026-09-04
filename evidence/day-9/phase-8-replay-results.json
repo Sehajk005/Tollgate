@@ -1,0 +1,472 @@
+{
+  "runs": [
+    {
+      "label": "A/easy/pace=False/rep1",
+      "tier": "easy",
+      "speed": 0,
+      "pace": false,
+      "run_id": "01M1KM0R69W8NQP9KWC9GRP50A",
+      "state": "finished",
+      "sent": 821,
+      "total": 821,
+      "terminal": true,
+      "ascore_delta": 821,
+      "ascore_parity": true,
+      "redis_floor_after_reset": 0,
+      "cleared": {
+        "window_store": 3236,
+        "threat": true,
+        "layer2": true,
+        "incidents": true,
+        "policy_engine": true,
+        "decision_cache": true,
+        "persisted_incidents": 2
+      },
+      "reset_degraded": false
+    },
+    {
+      "label": "A/easy/pace=False/rep2",
+      "tier": "easy",
+      "speed": 0,
+      "pace": false,
+      "run_id": "01M1KM108KFGKS95K67EMWBJC7",
+      "state": "finished",
+      "sent": 821,
+      "total": 821,
+      "terminal": true,
+      "ascore_delta": 821,
+      "ascore_parity": true,
+      "redis_floor_after_reset": 0,
+      "cleared": {
+        "window_store": 3236,
+        "threat": true,
+        "layer2": true,
+        "incidents": true,
+        "policy_engine": true,
+        "decision_cache": true,
+        "persisted_incidents": 2
+      },
+      "reset_degraded": false
+    },
+    {
+      "label": "A/easy/pace=True/rep1",
+      "tier": "easy",
+      "speed": 0,
+      "pace": true,
+      "run_id": "01M1KM168SP7FHAC8Y2EYT48QR",
+      "state": "finished",
+      "sent": 821,
+      "total": 821,
+      "terminal": true,
+      "ascore_delta": 821,
+      "ascore_parity": true,
+      "redis_floor_after_reset": 0,
+      "cleared": {
+        "window_store": 3236,
+        "threat": true,
+        "layer2": true,
+        "incidents": true,
+        "policy_engine": true,
+        "decision_cache": true,
+        "persisted_incidents": 2
+      },
+      "reset_degraded": false
+    },
+    {
+      "label": "A/easy/pace=True/rep2",
+      "tier": "easy",
+      "speed": 0,
+      "pace": true,
+      "run_id": "01M1KM1C58XKGP11HKPDWY5GJ2",
+      "state": "finished",
+      "sent": 821,
+      "total": 821,
+      "terminal": true,
+      "ascore_delta": 821,
+      "ascore_parity": true,
+      "redis_floor_after_reset": 0,
+      "cleared": {
+        "window_store": 3236,
+        "threat": true,
+        "layer2": true,
+        "incidents": true,
+        "policy_engine": true,
+        "decision_cache": true,
+        "persisted_incidents": 2
+      },
+      "reset_degraded": false
+    },
+    {
+      "label": "A/medium/pace=False/rep1",
+      "tier": "medium",
+      "speed": 0,
+      "pace": false,
+      "run_id": "01M1KM1M4J310QB3PE26QZF1R0",
+      "state": "finished",
+      "sent": 701,
+      "total": 701,
+      "terminal": true,
+      "ascore_delta": 701,
+      "ascore_parity": true,
+      "redis_floor_after_reset": 0,
+      "cleared": {
+        "window_store": 2880,
+        "threat": true,
+        "layer2": true,
+        "incidents": true,
+        "policy_engine": true,
+        "decision_cache": true,
+        "persisted_incidents": 14
+      },
+      "reset_degraded": false
+    },
+    {
+      "label": "A/medium/pace=False/rep2",
+      "tier": "medium",
+      "speed": 0,
+      "pace": false,
+      "run_id": "01M1KM1S6EP4KYN86TQKJE6F29",
+      "state": "finished",
+      "sent": 701,
+      "total": 701,
+      "terminal": true,
+      "ascore_delta": 701,
+      "ascore_parity": true,
+      "redis_floor_after_reset": 0,
+      "cleared": {
+        "window_store": 2880,
+        "threat": true,
+        "layer2": true,
+        "incidents": true,
+        "policy_engine": true,
+        "decision_cache": true,
+        "persisted_incidents": 13
+      },
+      "reset_degraded": false
+    },
+    {
+      "label": "A/medium/pace=True/rep1",
+      "tier": "medium",
+      "speed": 0,
+      "pace": true,
+      "run_id": "01M1KM20Z1QZ7YEEW7C7V0D0Z8",
+      "state": "finished",
+      "sent": 701,
+      "total": 701,
+      "terminal": true,
+      "ascore_delta": 701,
+      "ascore_parity": true,
+      "redis_floor_after_reset": 0,
+      "cleared": {
+        "window_store": 2880,
+        "threat": true,
+        "layer2": true,
+        "incidents": true,
+        "policy_engine": true,
+        "decision_cache": true,
+        "persisted_incidents": 13
+      },
+      "reset_degraded": false
+    },
+    {
+      "label": "A/medium/pace=True/rep2",
+      "tier": "medium",
+      "speed": 0,
+      "pace": true,
+      "run_id": "01M1KM2BYHFE6G30DQ8XE354Q6",
+      "state": "finished",
+      "sent": 701,
+      "total": 701,
+      "terminal": true,
+      "ascore_delta": 701,
+      "ascore_parity": true,
+      "redis_floor_after_reset": 0,
+      "cleared": {
+        "window_store": 2880,
+        "threat": true,
+        "layer2": true,
+        "incidents": true,
+        "policy_engine": true,
+        "decision_cache": true,
+        "persisted_incidents": 13
+      },
+      "reset_degraded": false
+    },
+    {
+      "label": "A/hard/pace=False/rep1",
+      "tier": "hard",
+      "speed": 0,
+      "pace": false,
+      "run_id": "01M1KM2M027EPAR8TWXS1VMK80",
+      "state": "finished",
+      "sent": 508,
+      "total": 508,
+      "terminal": true,
+      "ascore_delta": 508,
+      "ascore_parity": true,
+      "redis_floor_after_reset": 0,
+      "cleared": {
+        "window_store": 2497,
+        "threat": true,
+        "layer2": true,
+        "incidents": true,
+        "policy_engine": true,
+        "decision_cache": true,
+        "persisted_incidents": 0
+      },
+      "reset_degraded": false
+    },
+    {
+      "label": "A/hard/pace=False/rep2",
+      "tier": "hard",
+      "speed": 0,
+      "pace": false,
+      "run_id": "01M1KM2V6H08VHR73Q1SC29MWM",
+      "state": "finished",
+      "sent": 508,
+      "total": 508,
+      "terminal": true,
+      "ascore_delta": 508,
+      "ascore_parity": true,
+      "redis_floor_after_reset": 0,
+      "cleared": {
+        "window_store": 2497,
+        "threat": true,
+        "layer2": true,
+        "incidents": true,
+        "policy_engine": true,
+        "decision_cache": true,
+        "persisted_incidents": 0
+      },
+      "reset_degraded": false
+    },
+    {
+      "label": "A/hard/pace=True/rep1",
+      "tier": "hard",
+      "speed": 0,
+      "pace": true,
+      "run_id": "01M1KM32JFG1T3EH295SEN4FPN",
+      "state": "finished",
+      "sent": 508,
+      "total": 508,
+      "terminal": true,
+      "ascore_delta": 508,
+      "ascore_parity": true,
+      "redis_floor_after_reset": 0,
+      "cleared": {
+        "window_store": 2497,
+        "threat": true,
+        "layer2": true,
+        "incidents": true,
+        "policy_engine": true,
+        "decision_cache": true,
+        "persisted_incidents": 0
+      },
+      "reset_degraded": false
+    },
+    {
+      "label": "A/hard/pace=True/rep2",
+      "tier": "hard",
+      "speed": 0,
+      "pace": true,
+      "run_id": "01M1KM38K9HJ3ZM9MV9GXCAHWC",
+      "state": "finished",
+      "sent": 508,
+      "total": 508,
+      "terminal": true,
+      "ascore_delta": 508,
+      "ascore_parity": true,
+      "redis_floor_after_reset": 0,
+      "cleared": {
+        "window_store": 2497,
+        "threat": true,
+        "layer2": true,
+        "incidents": true,
+        "policy_engine": true,
+        "decision_cache": true,
+        "persisted_incidents": 0
+      },
+      "reset_degraded": false
+    },
+    {
+      "label": "A/evasive/pace=False/rep1",
+      "tier": "evasive",
+      "speed": 0,
+      "pace": false,
+      "run_id": "01M1KM3GJKHJGT5DNTZSKZYVEJ",
+      "state": "finished",
+      "sent": 390,
+      "total": 390,
+      "terminal": true,
+      "ascore_delta": 390,
+      "ascore_parity": true,
+      "redis_floor_after_reset": 0,
+      "cleared": {
+        "window_store": 2272,
+        "threat": true,
+        "layer2": true,
+        "incidents": true,
+        "policy_engine": true,
+        "decision_cache": true,
+        "persisted_incidents": 0
+      },
+      "reset_degraded": false
+    },
+    {
+      "label": "A/evasive/pace=False/rep2",
+      "tier": "evasive",
+      "speed": 0,
+      "pace": false,
+      "run_id": "01M1KM3NK9E09CA94FJN4A8XWP",
+      "state": "finished",
+      "sent": 390,
+      "total": 390,
+      "terminal": true,
+      "ascore_delta": 390,
+      "ascore_parity": true,
+      "redis_floor_after_reset": 0,
+      "cleared": {
+        "window_store": 2272,
+        "threat": true,
+        "layer2": true,
+        "incidents": true,
+        "policy_engine": true,
+        "decision_cache": true,
+        "persisted_incidents": 0
+      },
+      "reset_degraded": false
+    },
+    {
+      "label": "A/evasive/pace=True/rep1",
+      "tier": "evasive",
+      "speed": 0,
+      "pace": true,
+      "run_id": "01M1KM3VQ8J284Q854ZNB4RHX5",
+      "state": "finished",
+      "sent": 390,
+      "total": 390,
+      "terminal": true,
+      "ascore_delta": 390,
+      "ascore_parity": true,
+      "redis_floor_after_reset": 0,
+      "cleared": {
+        "window_store": 2272,
+        "threat": true,
+        "layer2": true,
+        "incidents": true,
+        "policy_engine": true,
+        "decision_cache": true,
+        "persisted_incidents": 0
+      },
+      "reset_degraded": false
+    },
+    {
+      "label": "A/evasive/pace=True/rep2",
+      "tier": "evasive",
+      "speed": 0,
+      "pace": true,
+      "run_id": "01M1KM40FRHA3NA8YHB34X4WGZ",
+      "state": "finished",
+      "sent": 390,
+      "total": 390,
+      "terminal": true,
+      "ascore_delta": 390,
+      "ascore_parity": true,
+      "redis_floor_after_reset": 0,
+      "cleared": {
+        "window_store": 2272,
+        "threat": true,
+        "layer2": true,
+        "incidents": true,
+        "policy_engine": true,
+        "decision_cache": true,
+        "persisted_incidents": 0
+      },
+      "reset_degraded": false
+    },
+    {
+      "label": "B/easy/60/pace",
+      "tier": "easy",
+      "speed": 60,
+      "pace": true,
+      "run_id": "01M1KM44SV66VP0V3VRCG7BWD2",
+      "state": "finished",
+      "sent": 821,
+      "total": 821,
+      "wall_s": 125.8,
+      "open_incidents": "2"
+    },
+    {
+      "label": "B/easy/60/nopace",
+      "tier": "easy",
+      "speed": 60,
+      "pace": false,
+      "run_id": "01M1KM80VTAFZZDFDSBDGEZMX5",
+      "state": "finished",
+      "sent": 821,
+      "total": 821,
+      "wall_s": 182.8,
+      "open_incidents": "2"
+    },
+    {
+      "label": "B/medium/60/pace",
+      "tier": "medium",
+      "speed": 60,
+      "pace": true,
+      "run_id": "01M1KMDMC72ZRGJVBJN40VSC54",
+      "state": "finished",
+      "sent": 701,
+      "total": 701,
+      "wall_s": 124.6,
+      "open_incidents": "13"
+    }
+  ],
+  "checks": {
+    "C1_stop_true_terminal": true,
+    "C2_reset_while_running": true,
+    "C2b_backend_stopped_scoring": true,
+    "C3_repeat_run_full_and_new_runid": true,
+    "C3_auto_reset_on_dirty_launch": true,
+    "C4_tier_switch_and_back": true,
+    "D_speed1_paces_stops_resets": false,
+    "A_repeatable": true,
+    "A_easy_821": true,
+    "A_count_invariant_pace": true,
+    "all_run_ids_unique": true,
+    "no_run_swallowed": true
+  },
+  "tier_counts": {
+    "easy/pace=False": [
+      821,
+      821
+    ],
+    "easy/pace=True": [
+      821,
+      821
+    ],
+    "medium/pace=False": [
+      701,
+      701
+    ],
+    "medium/pace=True": [
+      701,
+      701
+    ],
+    "hard/pace=False": [
+      508,
+      508
+    ],
+    "hard/pace=True": [
+      508,
+      508
+    ],
+    "evasive/pace=False": [
+      390,
+      390
+    ],
+    "evasive/pace=True": [
+      390,
+      390
+    ]
+  }
+}

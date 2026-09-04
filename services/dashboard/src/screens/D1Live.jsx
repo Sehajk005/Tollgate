@@ -9,17 +9,25 @@ import EventTicker from "../components/EventTicker.jsx";
 // Micro-fix (Day-8 Plan Step 3): the DECLINE RATE tile caption changes from
 // the now-stale `needs /v1/outcome · Day 7` to `outcome-keyed windows not
 // fed` -- a copy fix only. No decline-rate computation is added.
+//
+// Remediation plan FIX-016 (AUDIT-017) -- the ATTEMPTS tile now renders a
+// server number. It used to count `events` -- the dashboard's 200-entry SSE
+// buffer -- filtered to the last 5 minutes of event time. That is capped at 200
+// by construction, so during the exact burst the tile exists to show it stopped
+// counting and started under-reporting, and it was non-monotonic as the window
+// slid. `feature_snapshot.attempts_per_merchant_5m` is a merchant-scoped
+// 5-minute window computed inside the same one-round-trip Lua call, so the tile
+// has a named backend source and no frontend buffer limit can silently decide
+// what a displayed metric means.
 
-const FIVE_MIN_MS = 5 * 60 * 1000;
-
-export default function D1Live({ events = [], enforcement = null }) {
-  const latest = events[0];
-  const latestIngest = latest ? latest.ingest_time : null;
+export default function D1Live({ events = [], enforcement = null, latest: latestProp = null }) {
+  const latest = latestProp || events[0];
 
   const attemptsIn5Min =
-    latestIngest == null
-      ? 0
-      : events.filter((e) => latestIngest - e.ingest_time <= FIVE_MIN_MS).length;
+    latest && latest.feature_snapshot &&
+    typeof latest.feature_snapshot.attempts_per_merchant_5m === "number"
+      ? latest.feature_snapshot.attempts_per_merchant_5m
+      : null;
 
   const cardsPerIpTop =
     events.length === 0
@@ -37,7 +45,11 @@ export default function D1Live({ events = [], enforcement = null }) {
       <h1 className="tg-display-md" style={{ margin: "0 0 16px" }}>Live Monitor</h1>
 
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 24 }}>
-        <MetricTile label="Attempts · 5 min" value={attemptsIn5Min} caption="live · event time" />
+        <MetricTile
+          label="Attempts · 5 min"
+          value={attemptsIn5Min == null ? "—" : attemptsIn5Min}
+          caption="merchant window · event time"
+        />
         <MetricTile label="Decline rate" value="—" caption="outcome-keyed windows not fed" />
         <MetricTile
           label="Cards per IP · top"

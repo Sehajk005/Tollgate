@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -22,6 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from packages.config.env import load_env_file, validate_startup
 from services.scorer.deps import ScorerState
+from services.scorer.routes_demo import router as demo_router
 from services.scorer.routes_incidents import router as incidents_router
 from services.scorer.routes_outcome import router as outcome_router
 from services.scorer.routes_replay import router as replay_router
@@ -31,6 +33,52 @@ from services.scorer.routes_stream import router as stream_router
 logger = logging.getLogger("tollgate.scorer")
 
 DEV_ORIGINS = ["http://localhost:5173", "http://localhost:5174"]
+
+# Source: remediation plan §11.2 / FIX-001 -- PERMANENT instrumentation.
+#
+# AUDIT-006 was a blocked event loop, and the service had no way to say so: the
+# replay counter simply stopped and every endpoint timed out, with no evidence
+# left behind. This task sleeps for a known interval and logs how much longer
+# than that it actually took. It CANNOT preempt a synchronous spin -- nothing
+# running on the loop can -- but it records the block the moment the loop is
+# free again, so a stall always leaves a trace instead of a mystery.
+LOOP_LAG_INTERVAL_S = 1.0
+LOOP_LAG_WARN_S = 2.0
+_FAULTHANDLER_DUMP_S = 60.0
+
+
+async def _loop_lag_monitor() -> None:
+    loop = asyncio.get_running_loop()
+    try:
+        while True:
+            before = loop.time()
+            await asyncio.sleep(LOOP_LAG_INTERVAL_S)
+            lag = loop.time() - before - LOOP_LAG_INTERVAL_S
+            if lag > LOOP_LAG_WARN_S:
+                logger.warning(
+                    "event loop lag %.2fs (threshold %.1fs) -- something ran "
+                    "synchronously on the loop thread for that long",
+                    lag, LOOP_LAG_WARN_S,
+                )
+    except asyncio.CancelledError:
+        return
+
+
+def _maybe_enable_faulthandler() -> None:
+    """`TOLLGATE_FAULTHANDLER=1` arms native-fault tracebacks and a periodic
+    stack dump. Env-gated because the audit's own caveat stands: the two
+    SIGSEGVs it recorded happened under `dump_traceback_later`, so the
+    diagnostic itself is a suspect and §17 runs the gate BOTH ways."""
+    if os.environ.get("TOLLGATE_FAULTHANDLER", "").strip().lower() not in {"1", "true", "yes", "on"}:
+        return
+    import faulthandler
+
+    faulthandler.enable()
+    faulthandler.dump_traceback_later(_FAULTHANDLER_DUMP_S, repeat=True)
+    logger.warning(
+        "faulthandler enabled with a %.0fs repeating dump (TOLLGATE_FAULTHANDLER)",
+        _FAULTHANDLER_DUMP_S,
+    )
 
 
 def create_app(state: Optional[ScorerState] = None) -> FastAPI:
@@ -48,13 +96,24 @@ def create_app(state: Optional[ScorerState] = None) -> FastAPI:
         for message in validate_startup():
             logger.warning("config: %s", message)
 
+        _maybe_enable_faulthandler()
+
         active_state = state if state is not None else ScorerState.build_default()
         app.state.scorer = active_state
         active_state.drainer.drain_from_start()
         active_state.drainer.start()
+        lag_task = asyncio.create_task(_loop_lag_monitor())
         try:
             yield
         finally:
+            lag_task.cancel()
+            # Day 9 Plan Phase 3 -- stop a running demo flood load generator.
+            flood = getattr(active_state, "demo_flood", None)
+            if flood is not None and getattr(flood, "running", False):
+                try:
+                    await flood.stop()
+                except Exception:  # noqa: BLE001
+                    pass
             # Let any out-of-band Gemini narration tasks finish and spool
             # their narrator_call row before the spool is closed. Bounded
             # (~2x the call timeout) so a hung call cannot block shutdown;
@@ -90,6 +149,9 @@ def create_app(state: Optional[ScorerState] = None) -> FastAPI:
     app.include_router(score_router)
     app.include_router(stream_router)
     app.include_router(replay_router)
+    # Day 9 Plan Phase 3 -- J6 steps 6-8. Every route 404s unless
+    # TOLLGATE_DEMO_CONTROLS=1, so it is inert in production.
+    app.include_router(demo_router)
     # Day-8 Plan Step 6 -- the D3 incident read model + confirm / resolve.
     app.include_router(incidents_router)
     # Day-7 Plan §4 Step 5 -- POST /v1/outcome. Self-guards: without
@@ -99,6 +161,23 @@ def create_app(state: Optional[ScorerState] = None) -> FastAPI:
 
     @app.get("/healthz")
     async def healthz() -> dict:
-        return {"status": "ok"}
+        """Deliberately does no work at all: its only job is to answer, so a
+        slow answer means the EVENT LOOP is blocked and nothing else. That is
+        precisely the signal AUDIT-006 needed and §17 gates on."""
+        scorer = getattr(app.state, "scorer", None)
+        if scorer is None:
+            return {"status": "ok"}
+        drainer = scorer.drainer
+        # Source: remediation plan §17 -- the drainer gate ("connect() calls <= 2
+        # per run", "the thread is alive at the end of all 23 runs") has to be
+        # checkable from OUTSIDE the process, because the runs it gates are
+        # subprocesses. Counters only; no work is done here.
+        return {
+            "status": "ok",
+            "drainer_alive": drainer.is_alive(),
+            "drainer_connects": drainer.connect_calls,
+            "drainer_rows": drainer.rows_drained,
+            "drainer_failures": drainer.consecutive_failures,
+        }
 
     return app

@@ -39,11 +39,25 @@ data/corpus/
 # Node
 node_modules/
 dist/
+# Vite writes this transient ESM shim next to vite/vitest config files while
+# resolving an ESM config; it is never source.
+*.timestamp-*.mjs
+# Day 9: Playwright regenerates these on every run -- HTML report + trace/video
+# bundles + the .last-run.json marker (a repo-root test-results/ appears when the
+# suite is run from the repo root). The classified results live in
+# DAY-9-TEST-RESULTS.md + evidence/.
+services/dashboard/playwright-report/
+services/dashboard/blob-report/
+test-results/
 
 # Environment / secrets
 .env
 .env.*
 !.env.example
+# Day 9 Phase 2: the env_file the Compose stack reads. scripts.compose_bootstrap
+# writes the merchant API key + outcome secret + TG_CONFIG_HASH here. Never
+# commit; deploy/compose.env.example documents the shape.
+deploy/compose.env
 
 # OS / editor
 .DS_Store
@@ -56,3 +70,5 @@ Thumbs.db
 
 # Skills
 .superpowers
+# Source: remediation plan §17 -- scripts/verify_60x.py scratch output
+.verify60x/

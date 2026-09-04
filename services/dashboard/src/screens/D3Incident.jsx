@@ -31,7 +31,14 @@ function Section({ title, children }) {
   );
 }
 
-export default function D3Incident({ incidentId }) {
+// Remediation plan FIX-015 (AUDIT-008): `incidentId` now comes from
+// GET /v1/incidents (see hooks/useIncidents.js), not from scanning the 200-event
+// SSE buffer, so D3 stays reachable for the whole life of an incident and after
+// a refresh. `listLoading` / `listError` are the LIST's states, kept distinct
+// from this screen's own detail fetch -- "No incidents" must never be what the
+// operator sees when the fetch failed. The dead `sseIncident` prop App.jsx used
+// to pass (and this component never destructured) is gone.
+export default function D3Incident({ incidentId, listLoading = false, listError = null }) {
   const [detail, setDetail] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -74,12 +81,33 @@ export default function D3Incident({ incidentId }) {
     }
   }
 
+  if (listError) {
+    return (
+      <div style={{ padding: 24 }}>
+        <p className="tg-body" role="alert" style={{ color: "var(--tg-attack)" }}>
+          {listError}
+        </p>
+        <p className="tg-caption" style={{ color: "var(--tg-text-mute)" }}>
+          This is a failure to LOAD incidents, not an absence of them.
+        </p>
+      </div>
+    );
+  }
+
+  if (listLoading && !incidentId) {
+    return (
+      <div style={{ padding: 24 }}>
+        <p className="tg-body" style={{ color: "var(--tg-text-mute)" }}>Loading incidents…</p>
+      </div>
+    );
+  }
+
   if (!incidentId) {
     return (
       <div style={{ padding: 24 }}>
         <p className="tg-body" style={{ color: "var(--tg-text-2)" }}>
-          No incidents. Baseline learned while traffic is nominal — the Incidents view opens the
-          newest live incident the moment one fires.
+          No incidents open. Baseline learned while traffic is nominal — the Incidents view opens
+          the newest live incident the moment one fires.
         </p>
       </div>
     );

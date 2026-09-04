@@ -4,229 +4,421 @@
       "easy": {
         "ap_at_eval_prevalence": 0.01783008837101664,
         "ap_raw": 0.789228046757773,
+        "eval_prevalence": 0.01,
         "n": 821,
         "prevalence": 0.730816077953715,
         "recall_at_target_fpr": {
+          "ci_basis": "wilson_on_achieved_fpr",
           "ci_high": 0.017085189007591345,
           "ci_low": 0.0,
+          "fpr_ci_high": 0.017085189007591345,
+          "fpr_ci_low": 0.0,
           "n_neg": 221,
           "resolvable": false,
           "value": 0.0
-        }
+        },
+        "split": "temporal_test"
       },
       "evasive": {
         "ap_at_eval_prevalence": 0.4105477389607434,
         "ap_raw": 0.8137489129329989,
+        "eval_prevalence": 0.01,
         "n": 390,
         "prevalence": 0.43333333333333335,
         "recall_at_target_fpr": {
+          "ci_basis": "wilson_on_achieved_fpr",
           "ci_high": 0.017085189007591345,
           "ci_low": 0.0,
+          "fpr_ci_high": 0.017085189007591345,
+          "fpr_ci_low": 0.0,
           "n_neg": 221,
           "resolvable": false,
           "value": 0.3905325443786982
-        }
+        },
+        "split": "tier_e"
       },
       "hard": {
         "ap_at_eval_prevalence": 0.743827548477204,
         "ap_raw": 0.9348555087114371,
+        "eval_prevalence": 0.01,
         "n": 603,
         "prevalence": 0.4759535655058043,
         "recall_at_target_fpr": {
+          "ci_basis": "wilson_on_achieved_fpr",
           "ci_high": 0.01201050931564091,
           "ci_low": 0.0,
+          "fpr_ci_high": 0.01201050931564091,
+          "fpr_ci_low": 0.0,
           "n_neg": 316,
           "resolvable": false,
           "value": 0.7317073170731707
-        }
+        },
+        "split": "temporal_test"
       },
       "medium": {
         "ap_at_eval_prevalence": 0.9781876478904107,
         "ap_raw": 0.9975852859372561,
+        "eval_prevalence": 0.01,
         "n": 701,
         "prevalence": 0.6847360912981455,
         "recall_at_target_fpr": {
+          "ci_basis": "wilson_on_achieved_fpr",
           "ci_high": 0.017085189007591345,
           "ci_low": 0.0,
+          "fpr_ci_high": 0.017085189007591345,
+          "fpr_ci_low": 0.0,
           "n_neg": 221,
           "resolvable": false,
           "value": 0.9729166666666667
-        }
+        },
+        "split": "temporal_test"
       }
     },
     "rules-only-v0": {
       "easy": {
         "ap_at_eval_prevalence": 0.997418749864966,
         "ap_raw": 0.9997806317611843,
+        "eval_prevalence": 0.01,
         "n": 821,
         "prevalence": 0.730816077953715,
         "recall_at_target_fpr": {
+          "ci_basis": "wilson_on_achieved_fpr",
           "ci_high": 0.017085189007591345,
           "ci_low": 0.0,
+          "fpr_ci_high": 0.017085189007591345,
+          "fpr_ci_low": 0.0,
           "n_neg": 221,
           "resolvable": false,
           "value": 0.9966666666666667
-        }
+        },
+        "split": "temporal_test"
       },
       "evasive": {
         "ap_at_eval_prevalence": 0.5967144840528963,
         "ap_raw": 0.9582914513843178,
+        "eval_prevalence": 0.01,
         "n": 390,
         "prevalence": 0.43333333333333335,
         "recall_at_target_fpr": {
+          "ci_basis": "wilson_on_achieved_fpr",
           "ci_high": 0.017085189007591345,
           "ci_low": 0.0,
+          "fpr_ci_high": 0.017085189007591345,
+          "fpr_ci_low": 0.0,
           "n_neg": 221,
           "resolvable": false,
           "value": 0.28402366863905326
-        }
+        },
+        "split": "tier_e"
       },
       "hard": {
         "ap_at_eval_prevalence": 0.6387413447973289,
         "ap_raw": 0.9814576232319572,
+        "eval_prevalence": 0.01,
         "n": 603,
         "prevalence": 0.4759535655058043,
         "recall_at_target_fpr": {
+          "ci_basis": "wilson_on_achieved_fpr",
           "ci_high": 0.01201050931564091,
           "ci_low": 0.0,
+          "fpr_ci_high": 0.01201050931564091,
+          "fpr_ci_low": 0.0,
           "n_neg": 316,
           "resolvable": false,
           "value": 0.1254355400696864
-        }
+        },
+        "split": "temporal_test"
       },
       "medium": {
         "ap_at_eval_prevalence": 0.9879033272920038,
         "ap_raw": 0.9987244743044149,
+        "eval_prevalence": 0.01,
         "n": 701,
         "prevalence": 0.6847360912981455,
         "recall_at_target_fpr": {
+          "ci_basis": "wilson_on_achieved_fpr",
           "ci_high": 0.017085189007591345,
           "ci_low": 0.0,
+          "fpr_ci_high": 0.017085189007591345,
+          "fpr_ci_low": 0.0,
           "n_neg": 221,
           "resolvable": false,
           "value": 0.9854166666666667
-        }
+        },
+        "split": "temporal_test"
       }
     }
   },
   "block2_negative_controls": {
     "cgnat": [
       {
+        "attempt_fp": 376,
+        "attempts": 500,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
+        "episode_fp": 1,
+        "episodes": 1,
+        "reason": null,
+        "scorer": "l1-lgbm-v1"
+      },
+      {
+        "attempt_fp": 249,
+        "attempts": 500,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
+        "episode_fp": 1,
+        "episodes": 1,
+        "reason": null,
+        "scorer": "rules-only-v0"
+      },
+      {
         "attempt_fp": 0,
         "attempts": 500,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": false,
         "episode_fp": 0,
         "episodes": 1,
+        "reason": null,
         "scorer": "perfect"
       },
       {
         "attempt_fp": 374,
         "attempts": 500,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
         "episode_fp": 1,
         "episodes": 1,
+        "reason": null,
         "scorer": "random"
       },
       {
         "attempt_fp": 500,
         "attempts": 500,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
         "episode_fp": 1,
         "episodes": 1,
+        "reason": null,
         "scorer": "inverted"
       },
       {
         "attempt_fp": 500,
         "attempts": 500,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
         "episode_fp": 1,
         "episodes": 1,
+        "reason": null,
         "scorer": "always_positive"
       }
     ],
     "corporate_nat": [
       {
+        "attempt_fp": 298,
+        "attempts": 300,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
+        "episode_fp": 1,
+        "episodes": 1,
+        "reason": null,
+        "scorer": "l1-lgbm-v1"
+      },
+      {
+        "attempt_fp": 293,
+        "attempts": 300,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
+        "episode_fp": 1,
+        "episodes": 1,
+        "reason": null,
+        "scorer": "rules-only-v0"
+      },
+      {
         "attempt_fp": 0,
         "attempts": 300,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": false,
         "episode_fp": 0,
         "episodes": 1,
+        "reason": null,
         "scorer": "perfect"
       },
       {
         "attempt_fp": 231,
         "attempts": 300,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
         "episode_fp": 1,
         "episodes": 1,
+        "reason": null,
         "scorer": "random"
       },
       {
         "attempt_fp": 300,
         "attempts": 300,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
         "episode_fp": 1,
         "episodes": 1,
+        "reason": null,
         "scorer": "inverted"
       },
       {
         "attempt_fp": 300,
         "attempts": 300,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
         "episode_fp": 1,
         "episodes": 1,
+        "reason": null,
         "scorer": "always_positive"
       }
     ],
     "flash_sale": [
       {
+        "attempt_fp": 364,
+        "attempts": 720,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
+        "episode_fp": 1,
+        "episodes": 1,
+        "reason": null,
+        "scorer": "l1-lgbm-v1"
+      },
+      {
+        "attempt_fp": 311,
+        "attempts": 720,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
+        "episode_fp": 1,
+        "episodes": 1,
+        "reason": null,
+        "scorer": "rules-only-v0"
+      },
+      {
         "attempt_fp": 0,
         "attempts": 720,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": false,
         "episode_fp": 0,
         "episodes": 1,
+        "reason": null,
         "scorer": "perfect"
       },
       {
         "attempt_fp": 542,
         "attempts": 720,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
         "episode_fp": 1,
         "episodes": 1,
+        "reason": null,
         "scorer": "random"
       },
       {
         "attempt_fp": 720,
         "attempts": 720,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
         "episode_fp": 1,
         "episodes": 1,
+        "reason": null,
         "scorer": "inverted"
       },
       {
         "attempt_fp": 720,
         "attempts": 720,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
         "episode_fp": 1,
         "episodes": 1,
+        "reason": null,
         "scorer": "always_positive"
       }
     ],
     "nri_traffic": [
       {
+        "attempt_fp": 22,
+        "attempts": 216,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
+        "episode_fp": 1,
+        "episodes": 1,
+        "reason": null,
+        "scorer": "l1-lgbm-v1"
+      },
+      {
+        "attempt_fp": 4,
+        "attempts": 216,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
+        "episode_fp": 1,
+        "episodes": 1,
+        "reason": null,
+        "scorer": "rules-only-v0"
+      },
+      {
         "attempt_fp": 0,
         "attempts": 216,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": false,
         "episode_fp": 0,
         "episodes": 1,
+        "reason": null,
         "scorer": "perfect"
       },
       {
         "attempt_fp": 171,
         "attempts": 216,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
         "episode_fp": 1,
         "episodes": 1,
+        "reason": null,
         "scorer": "random"
       },
       {
         "attempt_fp": 216,
         "attempts": 216,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
         "episode_fp": 1,
         "episodes": 1,
+        "reason": null,
         "scorer": "inverted"
       },
       {
         "attempt_fp": 216,
         "attempts": 216,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
         "episode_fp": 1,
         "episodes": 1,
+        "reason": null,
         "scorer": "always_positive"
       }
     ],
@@ -234,271 +426,460 @@
       {
         "attempt_fp": 0,
         "attempts": 5,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": false,
         "episode_fp": 0,
         "episodes": 1,
+        "reason": null,
+        "scorer": "l1-lgbm-v1"
+      },
+      {
+        "attempt_fp": 0,
+        "attempts": 5,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": false,
+        "episode_fp": 0,
+        "episodes": 1,
+        "reason": null,
+        "scorer": "rules-only-v0"
+      },
+      {
+        "attempt_fp": 0,
+        "attempts": 5,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": false,
+        "episode_fp": 0,
+        "episodes": 1,
+        "reason": null,
         "scorer": "perfect"
       },
       {
         "attempt_fp": 3,
         "attempts": 5,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
         "episode_fp": 1,
         "episodes": 1,
+        "reason": null,
         "scorer": "random"
       },
       {
         "attempt_fp": 5,
         "attempts": 5,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
         "episode_fp": 1,
         "episodes": 1,
+        "reason": null,
         "scorer": "inverted"
       },
       {
         "attempt_fp": 5,
         "attempts": 5,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
         "episode_fp": 1,
         "episodes": 1,
+        "reason": null,
         "scorer": "always_positive"
       }
     ],
     "shared_ip_legit": [
       {
+        "attempt_fp": 1,
+        "attempts": 1,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
+        "episode_fp": 1,
+        "episodes": 1,
+        "reason": null,
+        "scorer": "l1-lgbm-v1"
+      },
+      {
+        "attempt_fp": 1,
+        "attempts": 1,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
+        "episode_fp": 1,
+        "episodes": 1,
+        "reason": null,
+        "scorer": "rules-only-v0"
+      },
+      {
         "attempt_fp": 0,
         "attempts": 1,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": false,
         "episode_fp": 0,
         "episodes": 1,
+        "reason": null,
         "scorer": "perfect"
       },
       {
         "attempt_fp": 0,
         "attempts": 1,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": false,
         "episode_fp": 0,
         "episodes": 1,
+        "reason": null,
         "scorer": "random"
       },
       {
         "attempt_fp": 1,
         "attempts": 1,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
         "episode_fp": 1,
         "episodes": 1,
+        "reason": null,
         "scorer": "inverted"
       },
       {
         "attempt_fp": 1,
         "attempts": 1,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
         "episode_fp": 1,
         "episodes": 1,
+        "reason": null,
         "scorer": "always_positive"
       }
     ],
     "subscription_batch": [
       {
+        "attempt_fp": 17,
+        "attempts": 200,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
+        "episode_fp": 1,
+        "episodes": 1,
+        "reason": null,
+        "scorer": "l1-lgbm-v1"
+      },
+      {
+        "attempt_fp": 5,
+        "attempts": 200,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
+        "episode_fp": 1,
+        "episodes": 1,
+        "reason": null,
+        "scorer": "rules-only-v0"
+      },
+      {
         "attempt_fp": 0,
         "attempts": 200,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": false,
         "episode_fp": 0,
         "episodes": 1,
+        "reason": null,
         "scorer": "perfect"
       },
       {
         "attempt_fp": 140,
         "attempts": 200,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
         "episode_fp": 1,
         "episodes": 1,
+        "reason": null,
         "scorer": "random"
       },
       {
         "attempt_fp": 200,
         "attempts": 200,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
         "episode_fp": 1,
         "episodes": 1,
+        "reason": null,
         "scorer": "inverted"
       },
       {
         "attempt_fp": 200,
         "attempts": 200,
+        "available": true,
+        "denominator_basis": "legitimate_attempts_only",
+        "episode_flagged": true,
         "episode_fp": 1,
         "episodes": 1,
+        "reason": null,
         "scorer": "always_positive"
       }
     ]
   },
+  "block2_theta_challenge": 0.2571428571428571,
   "block3_audit": {
     "features": {
       "amount_percentile_vs_store": {
         "constant": true,
+        "direction": null,
         "excluded": false,
         "flagged": false,
+        "flagged_two_sided": false,
         "reason": "constant 0.0 -- un-fed slot, Decision 43",
+        "separability": 0.0,
         "univariate_auc": 0.5
       },
       "attempts_per_ip_5m": {
         "constant": false,
+        "direction": "positive",
         "excluded": true,
         "flagged": true,
+        "flagged_two_sided": true,
         "reason": "same per-IP volume concentration as attempts_per_ip_60s, at the 5-minute window.",
+        "separability": 0.4949835204737165,
         "univariate_auc": 0.9949835204737165
       },
       "attempts_per_ip_60s": {
         "constant": false,
+        "direction": "positive",
         "excluded": true,
         "flagged": true,
+        "flagged_two_sided": true,
         "reason": "easy+medium card-testing bursts concentrate volume on 2-6 IPs over minutes, so per-IP rate is a near-perfect single-feature discriminator on the training tiers -- Eval Protocol \u00a74/V2 'likely simulator artifact'. Stays active in R1.",
+        "separability": 0.49584171275347744,
         "univariate_auc": 0.9958417127534774
       },
       "attempts_per_ipua_5m": {
         "constant": false,
+        "direction": "positive",
         "excluded": true,
         "flagged": true,
+        "flagged_two_sided": true,
         "reason": "per-(IP,UA) attempt volume -- the simulated attack drives one UA class per IP, so this tracks attempts_per_ip_5m almost exactly on the training tiers.",
+        "separability": 0.4949835204737165,
         "univariate_auc": 0.9949835204737165
       },
       "attempts_per_session": {
         "constant": true,
+        "direction": null,
         "excluded": false,
         "flagged": false,
+        "flagged_two_sided": false,
         "reason": "constant 0.0 -- un-fed slot, Decision 43",
+        "separability": 0.0,
         "univariate_auc": 0.5
       },
       "bin_entropy_5m": {
         "constant": false,
+        "direction": "positive",
         "excluded": false,
         "flagged": false,
+        "flagged_two_sided": false,
         "reason": null,
+        "separability": 0.21122877213563485,
         "univariate_auc": 0.7112287721356348
       },
       "bin_hhi_5m": {
         "constant": false,
+        "direction": "inverted",
         "excluded": false,
         "flagged": false,
+        "flagged_two_sided": false,
         "reason": null,
+        "separability": 0.21121573748207734,
         "univariate_auc": 0.28878426251792266
       },
       "bin_is_foreign_issued": {
         "constant": true,
+        "direction": null,
         "excluded": false,
         "flagged": false,
+        "flagged_two_sided": false,
         "reason": "constant 0.0 -- un-fed slot, Decision 43",
+        "separability": 0.0,
         "univariate_auc": 0.5
       },
       "card_seen_24h": {
         "constant": false,
+        "direction": "inverted",
         "excluded": false,
         "flagged": false,
+        "flagged_two_sided": false,
         "reason": null,
+        "separability": 0.27524928774928775,
         "univariate_auc": 0.22475071225071225
       },
       "clock_skew_s": {
         "constant": true,
+        "direction": null,
         "excluded": false,
         "flagged": false,
+        "flagged_two_sided": false,
         "reason": "constant 0.0 -- un-fed slot, Decision 43",
+        "separability": 0.0,
         "univariate_auc": 0.5
       },
       "decline_rate_per_ip_5m": {
         "constant": true,
+        "direction": null,
         "excluded": false,
         "flagged": false,
+        "flagged_two_sided": false,
         "reason": "constant 0.0 -- un-fed slot, Decision 43",
+        "separability": 0.0,
         "univariate_auc": 0.5
       },
       "distinct_amounts_per_ip_5m": {
         "constant": false,
+        "direction": "positive",
         "excluded": true,
         "flagged": true,
+        "flagged_two_sided": true,
         "reason": "the attack varies amount per probe from one IP while baseline customers repeat their own order value, so distinct amounts per IP separates the training tiers almost perfectly.",
+        "separability": 0.494816630355846,
         "univariate_auc": 0.994816630355846
       },
       "distinct_bins_per_ip_5m": {
         "constant": false,
+        "direction": "positive",
         "excluded": false,
         "flagged": false,
+        "flagged_two_sided": false,
         "reason": null,
+        "separability": 0.21126706143046015,
         "univariate_auc": 0.7112670614304601
       },
       "distinct_cards_per_bin_5m": {
         "constant": false,
+        "direction": "positive",
         "excluded": true,
         "flagged": true,
+        "flagged_two_sided": true,
         "reason": "card enumeration within a small issuer pool is the attack's defining shape; near-perfect single-feature separation on the training tiers. Stays active in R3 (and B2 shares this statistic).",
+        "separability": 0.49758742528350375,
         "univariate_auc": 0.9975874252835037
       },
       "distinct_cards_per_ip_5m_q": {
         "constant": true,
+        "direction": null,
         "excluded": false,
         "flagged": false,
+        "flagged_two_sided": false,
         "reason": "constant 0.0 -- un-fed slot, Decision 43",
+        "separability": 0.0,
         "univariate_auc": 0.5
       },
       "distinct_cards_per_ipua_5m_q": {
         "constant": true,
+        "direction": null,
         "excluded": false,
         "flagged": false,
+        "flagged_two_sided": false,
         "reason": "constant 0.0 -- un-fed slot, Decision 43",
+        "separability": 0.0,
         "univariate_auc": 0.5
       },
       "distinct_ips_per_bin_5m": {
         "constant": false,
+        "direction": "positive",
         "excluded": true,
         "flagged": true,
+        "flagged_two_sided": true,
         "reason": "the attack draws from a small BIN pool (bin_pool_size 4), so distinct source IPs per BIN spikes sharply during an episode -- near-perfectly separable on easy+medium.",
+        "separability": 0.48970262368955175,
         "univariate_auc": 0.9897026236895518
       },
       "event_id_reuse_count": {
         "constant": true,
+        "direction": null,
         "excluded": false,
         "flagged": false,
+        "flagged_two_sided": false,
         "reason": "constant 0.0 -- un-fed slot, Decision 43",
+        "separability": 0.0,
         "univariate_auc": 0.5
       },
       "foreign_bin_share_5m": {
         "constant": true,
+        "direction": null,
         "excluded": false,
         "flagged": false,
+        "flagged_two_sided": false,
         "reason": "constant 0.0 -- un-fed slot, Decision 43",
+        "separability": 0.0,
         "univariate_auc": 0.5
       },
       "foreign_bin_share_sigma": {
         "constant": true,
+        "direction": null,
         "excluded": false,
         "flagged": false,
+        "flagged_two_sided": false,
         "reason": "constant 0.0 -- un-fed slot, Decision 43",
+        "separability": 0.0,
         "univariate_auc": 0.5
       },
       "invalid_cvv_share_ip_5m": {
         "constant": true,
+        "direction": null,
         "excluded": false,
         "flagged": false,
+        "flagged_two_sided": false,
         "reason": "constant 0.0 -- un-fed slot, Decision 43",
+        "separability": 0.0,
         "univariate_auc": 0.5
       },
       "outcome_coverage_ratio": {
         "constant": true,
+        "direction": null,
         "excluded": false,
         "flagged": false,
+        "flagged_two_sided": false,
         "reason": "constant 0.0 -- un-fed slot, Decision 43",
+        "separability": 0.0,
         "univariate_auc": 0.5
       },
       "store_decline_rate_deviation_sigma": {
         "constant": true,
+        "direction": null,
         "excluded": false,
         "flagged": false,
+        "flagged_two_sided": false,
         "reason": "constant 0.0 -- un-fed slot, Decision 43",
+        "separability": 0.0,
         "univariate_auc": 0.5
       },
       "store_volume_deviation_sigma": {
         "constant": true,
+        "direction": null,
         "excluded": false,
         "flagged": false,
+        "flagged_two_sided": false,
         "reason": "constant 0.0 -- un-fed slot, Decision 43",
+        "separability": 0.0,
         "univariate_auc": 0.5
       }
     },
     "max_univariate_auc": 0.95,
+    "observed_max_univariate_auc": 0.9975874252835037,
     "statistic": "univariate_auc (Mann-Whitney) on the training set -- Eval Protocol \u00a74/V2",
     "training_set": {
       "n": 4566,
       "n_positive": 3240,
       "prevalence": 0.709592641261498
-    }
+    },
+    "univariate_auc_threshold": 0.95
   },
   "block4_cost": {
     "cost_optimal": {
@@ -615,6 +996,7 @@
         1799999.9999999998
       ]
     ],
+    "decision_region_fpr_max": 0.001978891820580475,
     "f1_optimal": {
       "cost_pi0": 27616.67885881492,
       "f1": 0.6384462151394422,
@@ -635,6 +1017,7 @@
       "pi0": 0.001,
       "pi1": 0.9
     },
+    "optima_coincident": true,
     "pi0": 0.001,
     "pi1": 0.9,
     "regime_switch_saving_minor": 23214508.206055675,
@@ -805,12 +1188,66 @@
         "pi": 0.01
       }
     ],
+    "ribbon_envelope": [
+      [
+        0.0,
+        5200.0,
+        520000.0
+      ],
+      [
+        0.0,
+        2761.6678858814926,
+        276166.78858814924
+      ],
+      [
+        0.0013192612137203166,
+        26357.641002677123,
+        284840.61741810833
+      ],
+      [
+        0.17546174142480211,
+        3159212.778593804,
+        3248454.6403830973
+      ],
+      [
+        0.34564643799472294,
+        6206208.113215194,
+        6221481.606198114
+      ],
+      [
+        0.5092348284960422,
+        9093204.000054045,
+        9165496.683800012
+      ],
+      [
+        0.6517150395778364,
+        11624973.856045151,
+        11729811.743837496
+      ],
+      [
+        0.8733509234828496,
+        15563874.246515585,
+        15718752.198929535
+      ],
+      [
+        0.9986807387862797,
+        17796490.765171506,
+        17974455.67282322
+      ],
+      [
+        1.0,
+        17820000.0,
+        17998200.0
+      ]
+    ],
     "ribbon_pis": [
       0.0001,
       0.001,
       0.01
     ],
+    "rupee_gap_is_structural": true,
     "rupee_gap_minor": 0.0,
+    "rupee_gap_note": "At a steady-state prevalence of 0.001, precision collapses away from FPR = 0 (F1 falls from 0.6384 at the optimum to 0.0000 at the next hull vertex), so the F1-optimal and cost-optimal operating points coincide. The rupee gap is a structural consequence of that prevalence, not a coincidence of this model.",
     "series": "l1-lgbm-v1",
     "series_substitution": null,
     "split": "temporal_test",
@@ -823,19 +1260,24 @@
       "brier_platt": 0.010819460275910905,
       "brier_platt_prior": 0.0006595608427881603,
       "brier_raw": 0.11933637869891789,
+      "ece_gap_platt_prior_vs_platt": 0.06958746389212926,
       "ece_platt": 0.07031799883085593,
       "ece_platt_prior": 0.0007305349387266664,
+      "ece_raw": 0.26202879546373986,
       "effective_n": 759.5178550404086
     },
     "pi1": {
       "brier_platt": 0.3413211881401572,
       "brier_platt_prior": 0.20202596864719705,
       "brier_raw": 0.1403088560189998,
+      "ece_gap_platt_prior_vs_platt": 0.11480067851333958,
       "ece_platt": 0.39547724058805567,
       "ece_platt_prior": 0.2806765620747161,
+      "ece_raw": 0.20889069891274548,
       "effective_n": 1650.8977933561696
     },
     "pi_t": 0.7250755287009063,
+    "prior_correction_helped_at_pi1": true,
     "raw_prevalence": 0.6432941176470588,
     "reliability_pi0": [
       {
@@ -988,8 +1430,11 @@
       "n": 2125,
       "prevalence": 0.6432941176470588,
       "recall_at_target_fpr": {
+        "ci_basis": "wilson_on_achieved_fpr",
         "ci_high": 0.005042333645953817,
         "ci_low": 0.0,
+        "fpr_ci_high": 0.005042333645953817,
+        "fpr_ci_low": 0.0,
         "n_neg": 758,
         "resolvable": false,
         "value": 0.7768836869056328
@@ -1007,6 +1452,28 @@
       "tp": 103,
       "tpr": 0.0753474762253109
     },
+    "b1_sanity_floor": {
+      "always_positive": {
+        "available": false,
+        "reason": "unreachable: a constant scorer (always_positive) has <=2 distinct ROC points, so its recall at a matched FPR is undefined -- not a measured 0",
+        "value": null
+      },
+      "inverted": {
+        "available": true,
+        "reason": null,
+        "value": 0.0
+      },
+      "perfect": {
+        "available": true,
+        "reason": null,
+        "value": 1.0
+      },
+      "random": {
+        "available": true,
+        "reason": null,
+        "value": 0.001463057790782736
+      }
+    },
     "b2": {
       "fn": 385,
       "fp": 0,
@@ -1016,6 +1483,215 @@
       "tn": 758,
       "tp": 982,
       "tpr": 0.7183613752743233
+    },
+    "b2_sanity_floor": {
+      "always_positive": {
+        "available": false,
+        "reason": "unreachable: a constant scorer (always_positive) has <=2 distinct ROC points, so its recall at a matched FPR is undefined -- not a measured 0",
+        "value": null
+      },
+      "inverted": {
+        "available": true,
+        "reason": null,
+        "value": 0.0
+      },
+      "perfect": {
+        "available": true,
+        "reason": null,
+        "value": 1.0
+      },
+      "random": {
+        "available": true,
+        "reason": null,
+        "value": 0.000731528895391368
+      }
+    },
+    "model": {
+      "ap_raw": 0.9453085415026754,
+      "n": 2125,
+      "prevalence": 0.6432941176470588,
+      "recall_at_target_fpr": {
+        "ci_basis": "wilson_on_achieved_fpr",
+        "ci_high": 0.005042333645953817,
+        "ci_low": 0.0,
+        "fpr_ci_high": 0.005042333645953817,
+        "fpr_ci_low": 0.0,
+        "n_neg": 758,
+        "resolvable": false,
+        "value": 0.46891002194586684
+      },
+      "roc_auc": 0.8893031752986433,
+      "split": "temporal_test"
+    },
+    "per_tier": {
+      "easy": {
+        "b0": {
+          "fn": 4,
+          "fp": 0,
+          "fpr": 0.0,
+          "precision": 1.0,
+          "recall": 0.9933333333333333,
+          "tn": 221,
+          "tp": 596,
+          "tpr": 0.9933333333333333
+        },
+        "b1": {
+          "fn": 549,
+          "fp": 1,
+          "fpr": 0.004524886877828055,
+          "precision": 0.9807692307692307,
+          "recall": 0.085,
+          "tn": 220,
+          "tp": 51,
+          "tpr": 0.085
+        },
+        "b2": {
+          "fn": 19,
+          "fp": 0,
+          "fpr": 0.0,
+          "precision": 1.0,
+          "recall": 0.9683333333333334,
+          "tn": 221,
+          "tp": 581,
+          "tpr": 0.9683333333333334
+        },
+        "model": {
+          "fn": 600,
+          "fp": 0,
+          "fpr": 0.0,
+          "precision": null,
+          "recall": 0.0,
+          "tn": 221,
+          "tp": 0,
+          "tpr": 0.0
+        }
+      },
+      "evasive": {
+        "b0": {
+          "fn": 121,
+          "fp": 0,
+          "fpr": 0.0,
+          "precision": 1.0,
+          "recall": 0.28402366863905326,
+          "tn": 221,
+          "tp": 48,
+          "tpr": 0.28402366863905326
+        },
+        "b1": {
+          "fn": 169,
+          "fp": 0,
+          "fpr": 0.0,
+          "precision": null,
+          "recall": 0.0,
+          "tn": 221,
+          "tp": 0,
+          "tpr": 0.0
+        },
+        "b2": {
+          "fn": 169,
+          "fp": 0,
+          "fpr": 0.0,
+          "precision": null,
+          "recall": 0.0,
+          "tn": 221,
+          "tp": 0,
+          "tpr": 0.0
+        },
+        "model": {
+          "fn": 151,
+          "fp": 0,
+          "fpr": 0.0,
+          "precision": 1.0,
+          "recall": 0.10650887573964497,
+          "tn": 221,
+          "tp": 18,
+          "tpr": 0.10650887573964497
+        }
+      },
+      "hard": {
+        "b0": {
+          "fn": 60,
+          "fp": 1,
+          "fpr": 0.0031645569620253164,
+          "precision": 0.9956140350877193,
+          "recall": 0.7909407665505227,
+          "tn": 315,
+          "tp": 227,
+          "tpr": 0.7909407665505227
+        },
+        "b1": {
+          "fn": 287,
+          "fp": 0,
+          "fpr": 0.0,
+          "precision": null,
+          "recall": 0.0,
+          "tn": 316,
+          "tp": 0,
+          "tpr": 0.0
+        },
+        "b2": {
+          "fn": 287,
+          "fp": 0,
+          "fpr": 0.0,
+          "precision": null,
+          "recall": 0.0,
+          "tn": 316,
+          "tp": 0,
+          "tpr": 0.0
+        },
+        "model": {
+          "fn": 126,
+          "fp": 0,
+          "fpr": 0.0,
+          "precision": 1.0,
+          "recall": 0.5609756097560976,
+          "tn": 316,
+          "tp": 161,
+          "tpr": 0.5609756097560976
+        }
+      },
+      "medium": {
+        "b0": {
+          "fn": 15,
+          "fp": 0,
+          "fpr": 0.0,
+          "precision": 1.0,
+          "recall": 0.96875,
+          "tn": 221,
+          "tp": 465,
+          "tpr": 0.96875
+        },
+        "b1": {
+          "fn": 428,
+          "fp": 0,
+          "fpr": 0.0,
+          "precision": 1.0,
+          "recall": 0.10833333333333334,
+          "tn": 221,
+          "tp": 52,
+          "tpr": 0.10833333333333334
+        },
+        "b2": {
+          "fn": 79,
+          "fp": 0,
+          "fpr": 0.0,
+          "precision": 1.0,
+          "recall": 0.8354166666666667,
+          "tn": 221,
+          "tp": 401,
+          "tpr": 0.8354166666666667
+        },
+        "model": {
+          "fn": 26,
+          "fp": 0,
+          "fpr": 0.0,
+          "precision": 1.0,
+          "recall": 0.9458333333333333,
+          "tn": 221,
+          "tp": 454,
+          "tpr": 0.9458333333333333
+        }
+      }
     },
     "sanity_recall_at_b1_fpr": {
       "always_positive": null,
@@ -1032,17 +1708,28 @@
   },
   "provenance": {
     "base_seed": 42,
-    "build_hash": "9141a8ecc41be43182fdb3882cdf7a7045e3755fc3146be6b8563cda8c69198e",
+    "build_hash": "36d0cc4817e171112b098bcc8a96416be57769f313e57ec2b99f93099243d113",
     "calibrator_version": "platt-v1",
     "config_hash": "a7db8c61189a122a75d5b19391b63851e40f2c130d69e126a79a167cc0eeab3d",
+    "corpus_db_sha256": "7f6ef6dda715e2f263e970147948d436adcd162e86ca0429cf8b7ab933da9753",
     "eval_prevalence": 0.01,
     "fixture_sha256": "5672a0e68321551ca80df4fcc832602adb0e984b57a1dd143af1cd32b87f03aa",
+    "generated_at": "2026-09-02T17:03:50Z",
+    "generation_command": "D:\\Projects\\Tollgate\\eval\\harness.py --split all --seed 42 --corpus-db data/corpus/tollgate.db --model-dir models --out eval/outputs",
+    "head_at_generation": "8cf17d9121d76ba22b42975bcbc88dfde5cc0eac",
+    "model_files_sha256": {
+      "audit.json": "ce75cb7fa41a209df9f0e373b6640c976c28fb99d714703fb064f8e091f0b53c",
+      "l1-lgbm-v1.json": "7cb7fa8a187129bb300147d97ca97354cf52b9d944065da8a4669f42de5b66cc",
+      "l1-lgbm-v1.txt": "b8ba0a067032b984f557954137daf68f80e1dfb139aa2083a9fc0c43c8182409",
+      "platt-v1.json": "22dc48f0a47db1447862781d241d641d7e5145c6ea94bc9fd1f64d5c7b508864"
+    },
     "model_version": "l1-lgbm-v1",
     "policy_version": 1,
     "seed": 42,
-    "seeds_used": 1
+    "seeds_used": 1,
+    "tree_dirty_at_generation": true
   },
-  "schema_version": 1,
+  "schema_version": 2,
   "tier_e": {
     "converged_params": {
       "amount_quantile_band": [

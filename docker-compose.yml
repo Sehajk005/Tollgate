@@ -1,15 +1,65 @@
-# Source: TRD v2 §3 -- repository layout names docker-compose.yml at the
-# repo root. Day-3 Plan §0: two Redis services -- `redis` is the real
-# window-store backend; `redis-small` is a deliberately memory-capped
-# instance used ONLY by the eviction-vs-TTL differential test
-# (tests/acceptance/test_redis_eviction.py), never by the application.
+# Source: TRD v2 §3 (`docker compose up` on a laptop) + Day 9 Plan Phase 2.
+# Reconciliation R-1: this path did not exist -- the file previously defined
+# only the two Redis services. Day 9 builds the full stack the judge runs:
+#
+#     docker compose down -v && docker compose up --build
+#
+# Dev-parity by design: the repo is bind-mounted into every service. models/,
+# config/, data/corpus/, tollgate.db and spool/ stay host-side (the LightGBM
+# corpus is 18 MB and gitignored). Secrets come from deploy/compose.env, which
+# the one-shot `bootstrap` service writes before the scorer starts and which is
+# gitignored (deploy/compose.env.example documents the shape).
+
+name: tollgate
+
+# A fixed subnet so the two Vite proxy containers have stable IPs to name in
+# the scorer's TOLLGATE_TRUSTED_EDGE_HOSTS (Threat Model K8 "declared edge";
+# Plan Phase 2 "resolve_client_ip under Docker" + PRE-4 enabler).
+networks:
+  tollgate:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+
+volumes:
+  # Mask the (Windows) host node_modules with a Linux one seeded from each
+  # image's `npm ci`.
+  dashboard_node_modules:
+  storefront_node_modules:
+  # The MUTABLE demo DB + spool. SQLite in WAL mode cannot mmap its -shm file
+  # over a Docker Desktop Windows bind mount, so a fresh read/write connection
+  # fails ("unable to open database file"). A Linux-native volume fixes it
+  # without any journal-mode / storage-semantics change. The one-shot
+  # `bootstrap` populates it (seed_merchant -> learn_store_baseline ->
+  # tune_cusum); `docker compose down -v` wipes it for a true clean start. The
+  # read-only 18 MB corpus DB (data/corpus/) stays bind-mounted -- it has no
+  # live -wal/-shm and opens fine.
+  tollgate_data:
+
+x-compose-env: &compose-env
+  env_file:
+    - path: deploy/compose.env
+      required: false
+
 services:
+  # --- infrastructure ----------------------------------------------------- #
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
     command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    networks:
+      tollgate:
+        ipv4_address: 172.28.0.20
 
+  # Day-3 Plan §0: deliberately memory-capped, used ONLY by
+  # tests/acceptance/test_redis_eviction.py, never by the application.
   redis-small:
     image: redis:7-alpine
     ports:
@@ -22,3 +72,149 @@ services:
         "--maxmemory", "2mb",
         "--maxmemory-policy", "allkeys-lru",
       ]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    networks:
+      tollgate:
+        ipv4_address: 172.28.0.21
+
+  # --- one-shot bootstrap ---------------------------------------------------- #
+  # seed_merchant -> learn_store_baseline -> tune_cusum, idempotent, footgun-safe
+  # (never prints a dead key). Also writes TG_CONFIG_HASH into deploy/compose.env
+  # for the dashboard. The scorer waits for this to exit 0.
+  bootstrap:
+    build:
+      context: .
+      dockerfile: services/scorer/Dockerfile
+    <<: *compose-env
+    working_dir: /repo
+    command: ["python", "-m", "scripts.compose_bootstrap"]
+    environment:
+      TG_BOOTSTRAP_ENV_FILE: /repo/deploy/compose.env
+      TOLLGATE_DB_PATH: /data/tollgate.db
+      TOLLGATE_SPOOL_DIR: /data/spool
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./:/repo
+      - tollgate_data:/data
+    restart: "no"
+    networks:
+      - tollgate
+
+  # --- scorer ------------------------------------------------------------- #
+  scorer:
+    build:
+      context: .
+      dockerfile: services/scorer/Dockerfile
+    <<: *compose-env
+    working_dir: /repo
+    ports:
+      - "8080:8080"
+    environment:
+      TOLLGATE_REDIS_URL: redis://redis:6379
+      # The declared edge: the two Vite proxy containers (static IPs below).
+      # Additive to the built-in loopback set; off-Docker behaviour unchanged.
+      TOLLGATE_TRUSTED_EDGE_HOSTS: "172.28.0.11,172.28.0.12"
+      # Mutable demo DB + spool on the Linux-native volume (see `volumes:`).
+      TOLLGATE_DB_PATH: /data/tollgate.db
+      TOLLGATE_SPOOL_DIR: /data/spool
+      # Day 9 Plan Phase 3 -- J6 steps 6-8. Enables the /v1/demo/* routes and
+      # the in-scorer fault injector. Default OFF everywhere else.
+      TOLLGATE_DEMO_CONTROLS: "1"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./:/repo
+      - tollgate_data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+      bootstrap:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    networks:
+      tollgate:
+        ipv4_address: 172.28.0.10
+
+  # --- frontends -------------------------------------------------------- #
+  storefront:
+    build:
+      context: .
+      dockerfile: services/storefront/Dockerfile
+    <<: *compose-env
+    working_dir: /repo/services/storefront
+    # DEF-D9-011: source deploy/compose.env at container start, exactly as
+    # services/scorer/Dockerfile's CMD does. Compose resolves `env_file:` at
+    # container-CREATE time -- before the one-shot `bootstrap` regenerates
+    # deploy/compose.env with a fresh VITE_TOLLGATE_API_KEY and seeds the
+    # merchant row with its hash. Without this the frontend serves the previous
+    # run's key (or none) and every keyed call to the scorer 401s after
+    # `docker compose down -v && up`. This `command:` OVERRIDES the image CMD,
+    # so the shim must live here, not (only) in the Dockerfile. `set -a`
+    # exports each KEY=VALUE; Vite reads VITE_* from process.env at dev-server
+    # start. By the depends_on chain, `bootstrap` has finished when this runs.
+    command: ["sh", "-c", "set -a; [ -f /repo/deploy/compose.env ] && . /repo/deploy/compose.env; set +a; exec npm run dev -- --host 0.0.0.0"]
+    ports:
+      - "5173:5173"
+    environment:
+      TOLLGATE_SCORER_URL: http://scorer:8080
+      # Day 9 Plan Phase 3 step 6 -- lets the Vite proxy promote the demo
+      # `x-tg-demo-xff` header to X-Forwarded-For (the co-tenant checkout).
+      TOLLGATE_DEMO_CONTROLS: "1"
+      VITE_TOLLGATE_DEMO_CONTROLS: "1"
+    volumes:
+      - ./:/repo
+      - storefront_node_modules:/repo/services/storefront/node_modules
+    depends_on:
+      scorer:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('net').connect(5173,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    networks:
+      tollgate:
+        ipv4_address: 172.28.0.11
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: services/dashboard/Dockerfile
+    <<: *compose-env
+    working_dir: /repo/services/dashboard
+    # DEF-D9-011 -- see the storefront `command:` above. Same fix: source the
+    # bootstrap-written deploy/compose.env so the dashboard's keyed calls
+    # (replay Launch/Stop/Reset, /v1/incidents) do not 401 after a clean
+    # `docker compose down -v && up`.
+    command: ["sh", "-c", "set -a; [ -f /repo/deploy/compose.env ] && . /repo/deploy/compose.env; set +a; exec npm run dev -- --host 0.0.0.0"]
+    ports:
+      - "5174:5174"
+    environment:
+      TOLLGATE_SCORER_URL: http://scorer:8080
+      # Day 9 Plan Phase 3 -- renders the FLOOD / KILL SCORER toggles in the
+      # demo control strip (the backend /v1/demo/* routes are gated separately).
+      VITE_TOLLGATE_DEMO_CONTROLS: "1"
+    volumes:
+      - ./:/repo
+      - dashboard_node_modules:/repo/services/dashboard/node_modules
+    depends_on:
+      scorer:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('net').connect(5174,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    networks:
+      tollgate:
+        ipv4_address: 172.28.0.12

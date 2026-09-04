@@ -4,11 +4,15 @@ Shared fixtures for the acceptance and unit suites.
 
 from __future__ import annotations
 
+import contextlib
+import os
 import secrets
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+
+import packages.config.env as env_config
 
 from packages.clock.clock import SystemClock
 from packages.clock.ids import UlidGenerator
@@ -24,6 +28,55 @@ from services.scorer.deps import ScorerState
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = REPO_ROOT / "schema.sql"
+
+
+# ---------------------------------------------------------------------------
+# Source: remediation plan FIX-000 (AUDIT-010) -- process-global test isolation.
+#
+# Two pieces of process-global state leak between tests and silently change
+# what a later test measures:
+#
+#   * `os.environ` -- `create_app()`'s lifespan calls `load_env_file()`, which
+#     loads the repo-root `.env` into THIS process. That is how the first
+#     acceptance test to use the `client` fixture put TOLLGATE_REDIS_URL into
+#     the pytest process, which `test_day2_e2e._spawn` then handed to its
+#     subprocess via `dict(os.environ)`. One test decided another test's
+#     storage backend. `monkeypatch` does not cover it: some tests (e.g.
+#     `test_narrator_eval_disabled.py`) write `os.environ` directly.
+#   * `packages.config.env._loaded` -- the once-only latch guarding that load.
+#     Restoring the environment without restoring the latch would leave a
+#     later `load_env_file()` a silent no-op.
+#
+# `env_snapshot()` is the mechanism; `env_isolation` is the autouse fixture
+# that applies it to every test. Pinned by tests/acceptance/test_env_isolation.py.
+# ---------------------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def env_snapshot():
+    """Restore `os.environ` and `packages.config.env._loaded` on exit.
+
+    Restores by difference rather than `os.environ.clear()` + update, so
+    variables whose value never changed are never re-`putenv`'d.
+    """
+    saved_environ = dict(os.environ)
+    saved_loaded = env_config._loaded
+    try:
+        yield
+    finally:
+        for key in [k for k in os.environ if k not in saved_environ]:
+            del os.environ[key]
+        for key, value in saved_environ.items():
+            if os.environ.get(key) != value:
+                os.environ[key] = value
+        env_config._loaded = saved_loaded
+
+
+@pytest.fixture(autouse=True)
+def env_isolation():
+    """Every test starts from, and leaves behind, the environment it was given."""
+    with env_snapshot():
+        yield
 
 
 @pytest.fixture

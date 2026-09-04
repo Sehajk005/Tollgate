@@ -69,6 +69,17 @@ class ScorePathRequest:
     windows: Tuple[WindowRequest, ...]
     cusum_bucket_s: int
     window_ttl_slack_ms: int
+    # Source: remediation plan FIX-004 (AUDIT-005) -- the RUN scope for the
+    # idempotency key, and only for the key. `""` is storefront traffic, whose
+    # key stays byte-identical to what shipped and whose 24-hour retry contract
+    # (Threat Model §3) is therefore untouched; a replay passes `r{run_id}:` so
+    # the second run of a tier cannot be swallowed as a replay of the first.
+    #
+    # Deliberately NOT folded into `idem_digest`: that value is observed by the
+    # determinism tests, the golden fixtures and the in-process decision cache,
+    # so varying it per run would break "two fresh runs agree". Varying only the
+    # KEY isolates runs while leaving every asserted value identical.
+    idem_namespace: str = ""
 
 
 @dataclass(frozen=True)
@@ -108,3 +119,16 @@ class WindowStore(Protocol):
     # backend lets PEXPIRE handle it). This runs OUTSIDE the atomic score path
     # -- shed structurally precludes `compute_features` / model / Layer 2.
     def shed_incr(self, merchant_id: str, ip: str, now_ms: int, ttl_ms: int) -> int: ...
+
+    # Source: remediation plan FIX-003 (AUDIT-001) -- `ReplayDriver.reset()` has
+    # called `window_store.clear()` since Day 2, but the method existed only on
+    # the in-memory backend and was never on this protocol. Under the DOCUMENTED
+    # Redis configuration it therefore threw `AttributeError` on the first line
+    # of reset, which took out all five clears with it and returned HTTP 500.
+    #
+    # Contract: remove ONLY Tollgate-owned state, scoped to `merchant_id` when
+    # given, and return how many keys were removed so the reset route can report
+    # a real per-layer result. `merchant_id=None` clears every `tg:*` key this
+    # store owns. NEVER `FLUSHDB` -- unrelated data in the same logical Redis DB
+    # must survive (asserted by test_window_store_clear.py).
+    def clear(self, merchant_id: Optional[str] = None) -> int: ...

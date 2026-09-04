@@ -1,0 +1,134 @@
+
+> tollgate-dashboard@0.1.0 test:cov
+> vitest run --coverage
+
+
+[1m[7m[36m RUN [39m[27m[22m [36mv2.1.9 [39m[90mD:/Projects/Tollgate/services/dashboard[39m
+      [2mCoverage enabled with [22m[33mv8[39m
+
+ [32m✓[39m src/styles/contrast.test.js [2m([22m[2m19 tests[22m[2m)[22m[90m 27[2mms[22m[39m
+ [32m✓[39m src/components/charts/costCurveGeometry.test.js [2m([22m[2m11 tests[22m[2m)[22m[90m 33[2mms[22m[39m
+ [32m✓[39m src/lib/metricsModel.test.js [2m([22m[2m19 tests[22m[2m)[22m[90m 101[2mms[22m[39m
+ [32m✓[39m src/lib/d6Contract.test.js [2m([22m[2m18 tests[22m[2m)[22m[90m 34[2mms[22m[39m
+ [32m✓[39m src/components/charts/CostCurve.test.jsx [2m([22m[2m15 tests[22m[2m)[22m[33m 2974[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-B4: subtitle, headline, gap (M-037, M-014, M-039)[2m > [22mstates series / tier / split from the artifact [33m373[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-B4: operating-point table + π drift (M-021)[2m > [22mrenders the exact operating-point table row for the coincident optimum [33m555[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-B4: operating-point table + π drift (M-021)[2m > [22ma fixture with pi0 = 0.002 moves every rendered π label [33m347[2mms[22m[39m
+ [32m✓[39m src/components/charts/AuditBars.test.jsx [2m([22m[2m10 tests[22m[2m)[22m[33m 2916[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-B3: grouping, sort, and the flag read from the artifact[2m > [22mrenders three groups with the right counts (6 flagged, 4 measured, 14 not fed) [33m822[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-B3: grouping, sort, and the flag read from the artifact[2m > [22mthe flagged bars are amber, the measured bars are grey, the not-fed have none [33m444[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-B3-06: the 14 un-fed constants are not measurements[2m > [22mthe string '0.500' appears nowhere, collapsed or expanded [33m340[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-B3-06: the 14 un-fed constants are not measurements[2m > [22meach not-fed row's accessible name never reads as a bare zero (A7) [33m422[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-B3: threshold read from the artifact, no 0.95 literal (M-012)[2m > [22mthe threshold marker sits at 90% and MOVES to 80% when the artifact threshold is 0.90 [33m322[2mms[22m[39m
+ [32m✓[39m src/components/metrics/Block5Calibration.test.jsx [2m([22m[2m11 tests[22m[2m)[22m[33m 2479[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-B5: the 2 x 6 grid (raw + Platt + Platt+prior for Brier AND ECE)[2m > [22mrenders every exact value for π₀ [33m936[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-B5: the 2 x 6 grid (raw + Platt + Platt+prior for Brier AND ECE)[2m > [22mrenders every exact value for π₁ [33m332[2mms[22m[39m
+ [32m✓[39m src/components/metrics/Block1PerTier.test.jsx [2m([22m[2m17 tests[22m[2m)[22m[33m 5203[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-B1: 1b prevalence-normalised AP (π_eval = 0.01, comparable)[2m > [22mrenders the model's four ap_at_eval_prevalence values exactly [33m765[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-B1: 1b prevalence-normalised AP (π_eval = 0.01, comparable)[2m > [22mrenders B0's four ap_at_eval_prevalence values exactly [33m413[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-B1: 1b prevalence-normalised AP (π_eval = 0.01, comparable)[2m > [22mdraws the π_eval reference marker at left = 1% on every 1b bar [33m338[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-B1: 1c within-tier AP (tier-own prevalence, NOT cross-tier)[2m > [22mrenders the model's four ap_raw values exactly [33m435[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-B1: 1c within-tier AP (tier-own prevalence, NOT cross-tier)[2m > [22mrenders B0's four ap_raw values exactly (0.9998 -> '1.000' pinned) [33m383[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-B1: 1c within-tier AP (tier-own prevalence, NOT cross-tier)[2m > [22mprints each tier's own prevalence adjacent to its ap_raw [33m565[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-B1-19: the evasive tier is labelled with its split, styled identically[2m > [22mnames tier_e on the evasive rows and temporal_test on the easy rows [33m326[2mms[22m[39m
+ [32m✓[39m src/components/metrics/Block6Baselines.test.jsx [2m([22m[2m9 tests[22m[2m)[22m[33m 3701[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-B6: the comparison has a subject (the model row)[2m > [22mrenders a model row with a numeric AP 0.945 and ROC-AUC 0.889 [33m1125[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-B6: the comparison has a subject (the model row)[2m > [22mrenders B0 AP 0.997 / ROC-AUC 0.994, B1 TPR 0.075, B2 TPR 0.718 [33m914[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-B6: the comparison has a subject (the model row)[2m > [22mrecall @ FPR 1e-3 for model and B0 renders 'not resolvable · n_neg=758', never a number [33m572[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-B6: per-tier matrix (4 tiers x 4 series)[2m > [22mrenders 16 TPR cells with the right spot values [33m506[2mms[22m[39m
+ [32m✓[39m src/screens/D6Metrics.test.jsx [2m([22m[2m7 tests[22m[2m)[22m[33m 5918[2mms[22m[39m
+   [33m[2m✓[22m[39m D6Metrics composition (happy path against the real artifact)[2m > [22mrenders the six blocks in argument order [33m1545[2mms[22m[39m
+   [33m[2m✓[22m[39m D6Metrics composition (happy path against the real artifact)[2m > [22mshows the Eval §9 identity line without interaction [33m828[2mms[22m[39m
+   [33m[2m✓[22m[39m D6Metrics composition (happy path against the real artifact)[2m > [22mFE-T-SUM: the executive summary is generated from the artifact and leads with B0-beats-model [33m793[2mms[22m[39m
+   [33m[2m✓[22m[39m D6Metrics composition (happy path against the real artifact)[2m > [22mthe executive summary renders above block 1 (DOM order) [33m752[2mms[22m[39m
+   [33m[2m✓[22m[39m D6Metrics composition (happy path against the real artifact)[2m > [22mrenders no NaN, and no bare-zero / bare-undefined leaf, on the happy path [33m642[2mms[22m[39m
+   [33m[2m✓[22m[39m D6Metrics degrades gracefully on non-throwing malformed inputs[2m > [22mmissingCalibration -> Block 5 says 'not measured', page still renders [33m581[2mms[22m[39m
+   [33m[2m✓[22m[39m D6Metrics degrades gracefully on non-throwing malformed inputs[2m > [22mexplicitNulls -> nulled fields render 'n/a', never a fabricated 0 [33m772[2mms[22m[39m
+ [32m✓[39m src/components/MetricsErrorBoundary.test.jsx [2m([22m[2m7 tests[22m[2m)[22m[33m 789[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-ERR: the boundary catches, names and logs[2m > [22mrenders an actionable fallback and keeps the shell mounted [33m451[2mms[22m[39m
+ [32m✓[39m src/components/metrics/ProvenanceHeader.test.jsx [2m([22m[2m5 tests[22m[2m)[22m[33m 443[2mms[22m[39m
+ [32m✓[39m src/lib/format.test.js [2m([22m[2m9 tests[22m[2m)[22m[90m 24[2mms[22m[39m
+ [32m✓[39m src/components/metrics/Block2NegativeControls.test.jsx [2m([22m[2m8 tests[22m[2m)[22m[33m 3658[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-B2: the product's own FP rows, per scenario[2m > [22mevery scenario carries an l1-lgbm-v1 and a rules-only-v0 row, first [33m475[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-B2: episode flagged is a boolean, never an x/1 rate (M-017)[2m > [22mrenders yes/no and never a '0/1' or '1/1' episode fraction [33m367[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-B2: underpowered vs powered scenarios are visually distinct[2m > [22mshared_ip_legit renders '0 of 1' and a 'single sample' badge [33m516[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-B2: underpowered vs powered scenarios are visually distinct[2m > [22mflash_sale renders 'n = 720' and a Wilson interval [33m487[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-B2: underpowered vs powered scenarios are visually distinct[2m > [22mretry_storm (n=5) shows an 'underpowered — n=5' badge [33m314[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-B2: semantic table (M-024)[2m > [22mthe table has an accessible name and a real rowspan, no empty grouping cell [33m1009[2mms[22m[39m
+ [32m✓[39m src/hooks/useHashRoute.test.js [2m([22m[2m5 tests[22m[2m)[22m[90m 126[2mms[22m[39m
+ [32m✓[39m src/lib/d6FieldCoverage.test.js [2m([22m[2m5 tests[22m[2m)[22m[90m 33[2mms[22m[39m
+ [32m✓[39m src/screens/D6Metrics.copy.test.jsx [2m([22m[2m15 tests[22m[2m)[22m[33m 2240[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-COPY (M-033): identifiers are not force-uppercased[2m > [22m"l1-lgbm-v1" renders lowercase, never inside a .tg-label [33m1301[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-COPY (M-033): identifiers are not force-uppercased[2m > [22m"rules-only-v0" renders lowercase, never inside a .tg-label [33m923[2mms[22m[39m
+ [32m✓[39m src/components/metrics/MethodologyPanel.test.jsx [2m([22m[2m2 tests[22m[2m)[22m[33m 705[2mms[22m[39m
+   [33m[2m✓[22m[39m MethodologyPanel[2m > [22mis collapsed by default [33m476[2mms[22m[39m
+ [32m✓[39m src/components/metrics/UnavailableGroup.test.jsx [2m([22m[2m3 tests[22m[2m)[22m[90m 254[2mms[22m[39m
+ [32m✓[39m src/components/LiveShell.test.jsx [2m([22m[2m4 tests[22m[2m)[22m[33m 3468[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-ROUTE: the Metrics route is addressable[2m > [22m#/metrics renders D6 on first paint, with aria-current on the Metrics nav [33m1743[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-ARCH: no live subscription on Metrics[2m > [22mconstructs ZERO EventSource instances on #/metrics [33m538[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-ARCH: no live subscription on Metrics[2m > [22mthe Demo Control Strip is absent on Metrics and present on Live [33m532[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-ARCH: no live subscription on Metrics[2m > [22mnavigating live -> metrics unmounts LiveShell and closes the EventSource [33m650[2mms[22m[39m
+ [32m✓[39m src/screens/D6Metrics.a11y.test.jsx [2m([22m[2m6 tests[22m[2m)[22m[33m 18233[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-A11Y-05..12: axe-core over the whole D6 page[2m > [22mreports zero violations on the happy path against the real artifact [33m10052[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-A11Y-05..12: axe-core over the whole D6 page[2m > [22mreports zero violations on a drifted-π artifact (copy still generated, not hard-coded) [33m7107[2mms[22m[39m
+   [33m[2m✓[22m[39m FE-T-A11Y: named structure the axe run relies on[2m > [22mevery data table has an accessible name (caption or aria-label) [33m417[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m21 passed[39m[22m[90m (21)[39m
+[2m      Tests [22m [1m[32m205 passed[39m[22m[90m (205)[39m
+[2m   Start at [22m 11:40:47
+[2m   Duration [22m 39.10s[2m (transform 16.81s, setup 54.12s, collect 28.26s, tests 53.36s, environment 195.46s, prepare 21.52s)[22m
+
+[34m % [39m[2mCoverage report from [22m[33mv8[39m
+-------------------|---------|----------|---------|---------|-------------------
+File               | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s 
+-------------------|---------|----------|---------|---------|-------------------
+All files          |   97.94 |       86 |   98.48 |   97.94 |                   
+ components        |   88.72 |    67.74 |     100 |   88.72 |                   
+  LiveShell.jsx    |   78.12 |       25 |     100 |   78.12 | 42-44,49-54,84-88 
+  ...rBoundary.jsx |   98.55 |    94.73 |     100 |   98.55 | 60                
+ components/charts |   97.36 |    90.65 |   93.75 |   97.36 |                   
+  AuditBars.jsx    |     100 |    71.42 |     100 |     100 | 1                 
+  ...Bars.test.jsx |     100 |      100 |     100 |     100 |                   
+  CostCurve.jsx    |   99.27 |     93.1 |     100 |   99.27 | 35-36             
+  ...urve.test.jsx |     100 |      100 |     100 |     100 |                   
+  ...tyDiagram.jsx |     100 |      100 |     100 |     100 |                   
+  ...veGeometry.js |   91.66 |    85.18 |    87.5 |   91.66 | ...83-184,286-289 
+  ...metry.test.js |     100 |      100 |     100 |     100 |                   
+ ...onents/metrics |   99.28 |    83.98 |     100 |   99.28 |                   
+  ...k1PerTier.jsx |     100 |    78.37 |     100 |     100 | ...00,165-167,190 
+  ...Tier.test.jsx |     100 |      100 |     100 |     100 |                   
+  ...eControls.jsx |   95.37 |    77.27 |     100 |   95.37 | 34-39             
+  ...rols.test.jsx |     100 |      100 |     100 |     100 |                   
+  ...libration.jsx |     100 |     90.9 |     100 |     100 | 24,148            
+  ...tion.test.jsx |     100 |      100 |     100 |     100 |                   
+  ...Baselines.jsx |   98.18 |    54.54 |     100 |   98.18 | 29,34-35          
+  ...ines.test.jsx |     100 |      100 |     100 |     100 |                   
+  ...logyPanel.jsx |     100 |       50 |     100 |     100 | 29,38-39,66-100   
+  ...anel.test.jsx |     100 |      100 |     100 |     100 |                   
+  ...ointTable.jsx |     100 |      100 |     100 |     100 |                   
+  ...nceHeader.jsx |     100 |       70 |     100 |     100 | 19-21,37          
+  ...ader.test.jsx |     100 |      100 |     100 |     100 |                   
+  ...bleRegion.jsx |     100 |      100 |     100 |     100 |                   
+  ...ableGroup.jsx |      96 |       75 |     100 |      96 | 24-25             
+  ...roup.test.jsx |     100 |       75 |     100 |     100 | 31-32             
+ hooks             |     100 |    73.33 |     100 |     100 |                   
+  useHashRoute.js  |     100 |    73.33 |     100 |     100 | 33,45,50-51       
+ lib               |   97.69 |    87.69 |     100 |   97.69 |                   
+  d6Contract.js    |   86.36 |    90.32 |     100 |   86.36 | ...55-159,161-165 
+  ...tract.test.js |     100 |      100 |     100 |     100 |                   
+  ...ldCoverage.js |   97.95 |    91.66 |     100 |   97.95 | 277-279,286-288   
+  ...erage.test.js |     100 |      100 |     100 |     100 |                   
+  format.js        |     100 |      100 |     100 |     100 |                   
+  format.test.js   |     100 |      100 |     100 |     100 |                   
+  metricsModel.js  |   99.05 |    71.02 |     100 |   99.05 | 98-101            
+  ...Model.test.js |     100 |      100 |     100 |     100 |                   
+ screens           |     100 |       60 |     100 |     100 |                   
+  D6Metrics.jsx    |     100 |       60 |     100 |     100 | 35,77-78,95       
+-------------------|---------|----------|---------|---------|-------------------
+
+=============================== Coverage summary ===============================
+Statements   : 97.94% ( 3867/3948 )
+Branches     : 86% ( 725/843 )
+Functions    : 98.48% ( 130/132 )
+Lines        : 97.94% ( 3867/3948 )
+================================================================================

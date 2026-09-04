@@ -55,7 +55,14 @@ class TestD6Artifact:
         )
 
     def test_all_six_blocks_and_provenance_present_and_non_empty(self, artifact):
-        assert artifact.get("schema_version") == 1
+        # Source: plan §8 / §26.1 -- the committed artifact is schema v2 (v1 -> v2
+        # is additive; both are supported by consumers).
+        from eval.d6_schema import SUPPORTED_SCHEMA_VERSIONS
+
+        assert artifact.get("schema_version") in SUPPORTED_SCHEMA_VERSIONS
+        assert artifact.get("schema_version") == 2, (
+            "the committed artifact should be regenerated at schema_version 2"
+        )
 
         prov = artifact.get("provenance")
         assert isinstance(prov, dict) and prov, "provenance missing/empty"
@@ -68,6 +75,30 @@ class TestD6Artifact:
         for block in _SIX_BLOCKS:
             v = artifact.get(block)
             assert isinstance(v, dict) and len(v) > 0, f"{block} missing or empty"
+
+    def test_committed_artifact_passes_full_schema_validation(self, artifact):
+        # Leaf validation (types, nullability, required fields, unknown keys) is
+        # delegated to eval/d6_schema.py -- see test_d6_schema.py for the
+        # rejection cases (plan §24.4).
+        from eval.d6_schema import validate
+
+        errors = validate(artifact)
+        assert errors == [], "committed d6.json failed schema validation:\n  - " + "\n  - ".join(errors)
+
+    def test_provenance_v2_completeness(self, artifact):
+        # Source: plan §17.2 / M-029 -- the freshness model.
+        from datetime import datetime
+
+        prov = artifact["provenance"]
+        for field in (
+            "generated_at", "generation_command", "head_at_generation",
+            "tree_dirty_at_generation", "model_files_sha256",
+        ):
+            assert field in prov, f"provenance.{field} missing at schema v2"
+        datetime.strptime(prov["generated_at"], "%Y-%m-%dT%H:%M:%SZ")  # ISO-8601 UTC
+        assert isinstance(prov["model_files_sha256"], dict) and prov["model_files_sha256"], (
+            "model_files_sha256 should be populated when regenerated with --model-dir"
+        )
 
     def test_block2_has_rows_for_negative_control_scenarios(self, artifact):
         b2 = artifact["block2_negative_controls"]

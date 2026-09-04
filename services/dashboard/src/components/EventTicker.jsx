@@ -35,7 +35,7 @@ function Row({ e }) {
       className="tg-ticker-row tg-mono-data tg-num"
       style={{
         display: "grid",
-        gridTemplateColumns: "96px 12px 160px 72px 64px 88px",
+        gridTemplateColumns: "96px 12px 160px 72px 152px",
         alignItems: "center",
         gap: 8,
         height: 28,
@@ -51,8 +51,14 @@ function Row({ e }) {
         {pseudo} &middot; {trunc(e.ip)}
       </span>
       <span>{trunc(e.bin, 6)}</span>
-      <span>{unscored ? "—" : ""}</span>
-      <span style={{ color: "var(--tg-text)" }}>{label}</span>
+      {/* Remediation plan FIX-020 (AUDIT-023): the separate score column
+          rendered an empty string for every scored row -- a permanently blank
+          64px column that reads as missing data. Its width is folded in here,
+          and the unscored dash moves into this cell so `shed` / `fail_open`
+          still read as unscored, which is SS6.4's actual requirement. */}
+      <span style={{ color: unscored ? "var(--tg-text-mute)" : "var(--tg-text)" }}>
+        {unscored ? `— ${label}` : label}
+      </span>
     </li>
   );
 }
