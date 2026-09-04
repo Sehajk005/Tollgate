@@ -816,21 +816,27 @@ eval.harness --write-eval-run
   recorded in any column (Decision 84); the incident detail screen / confirmation API /
   Gemini narrator are Day 8 -- Day 6 only produces the proposed-but-unconfirmed
   `enforcement_action` rows those screens will act on.
-- No D3 dashboard screen, no design tokens, no Stream Rail, no Gemini narrator backend
-  (Day 8). [Day 7 DONE] the template narrator IS now called from `score_attempt()` at
-  incident-open, through the `build_bundle()` / `assemble_prompt()` admission boundary
-  (§15); `NARRATOR_BACKEND != "template"` still raises (Gemini is Day 8).
+- [Day 8 DONE] The D0 shell, design tokens (plain CSS, Decision 95), the Stream Rail, the
+  three monochrome system-state banners, D3 Incident Detail + the confirm / resolve API, D6
+  Metrics (rendered entirely from the committed `eval/outputs/d6.json`), the storefront's
+  S1/S3/S5/S6/S7 screens, and the Gemini narrator behind `NARRATOR_BACKEND=gemini` all exist
+  (§17). The template narrator remains the immediate, always-available fallback; a Gemini
+  call is dispatched **out of band**, after the terminal SSE publish, and never touches the
+  scoring hot path or `_resolve_layer2` (Decision 98). `NARRATOR_ENABLED=false` (forced in
+  `eval/corpus.py`) makes a harness run issue zero Gemini calls.
 - No BIN metadata join -- `tier_ladder` is hardcoded `"domestic"`, `bin_is_foreign_issued`
   and `foreign_bin_share_5m` stay at `0.0`.
 - [Day 4 -> Day 7 DONE] `medium` and now `evasive` attack tiers and all seven
   negative-control scenarios exist (`config/attack_tiers.yaml`,
   `packages/simulator/negative.py`); the `evasive` block is populated by the Tier-E search
   (§16) and is **no longer `pending`**. No flood/kill-scorer DC toggles (D3/D6 UI, Day 8).
-- [Day 7 RE-DEFERRED] `/v1/stream` authentication. Decision 34 / Flow.md §10 / Threat Model
-  §9 annotated it "Day 7", but the approved Day-7 deliverable list (§4 A–F) omits it, so it
-  is **explicitly re-deferred past Day 7** under the minimality rule (Decision 94).
-  `/v1/stream` still binds loopback only and publishes `rules_fired` / `feature_snapshot`
-  unauthenticated; the residual disclosure risk is unchanged from Day 6.
+- [Day 7 RE-DEFERRED, still deferred past Day 8] `/v1/stream` authentication. Decision 34 /
+  Flow.md §10 / Threat Model §9 annotated it "Day 7", but the approved Day-7 deliverable list
+  (§4 A–F) omits it, so it is **explicitly re-deferred** under the minimality rule
+  (Decision 94). Day 8 adds `GET /v1/stream/recent` (the SSE polling fallback, §17) with the
+  **identical** posture — loopback-bound, unauthenticated — and it discloses nothing
+  `/v1/stream` does not already; the residual risk is unchanged. Day 8 does **not** add
+  `/v1/stream` authentication.
 - [Day 7] The token bucket, the fail-open availability monitor, and the stored-decision
   cache are **in-process on `ScorerState`** (Decision 86/87) — single Uvicorn worker only,
   not shared across workers and not surviving a restart. This is the same trade Decision 71
@@ -860,3 +866,124 @@ eval.harness --write-eval-run
   event today (no BIN metadata join, per the bullet above) -- `test_nri_control_tripwire.py`
   fails the moment that changes while attack-side foreign share stays zero. (Report Block 2
   keeps the "inert" marker; Day-5 did not populate `bin_metadata`.)
+
+## 17. [Day 8] The operator surface -- D0 shell / D3 / D6 / storefront / Gemini narrator
+
+### 17.1 Design tokens (Decision 95)
+
+`services/{dashboard,storefront}/src/main.jsx` import a plain-CSS token layer. Dashboard:
+`styles/tokens.css` (dark, `.tg-app` scope, UIUX §2.2/§2.4 verbatim), `styles/type.css`
+(`@fontsource/ibm-plex-{sans,mono}` + the §3.3 scale + `.tg-num`), `styles/base.css` (reset,
+2px `--tg-primary` focus ring, the §7 `prefers-reduced-motion` block verbatim). Storefront:
+`styles/tokens.css` (light, `.st-app` scope, deep-green `--st-accent`, no Plex). No Tailwind.
+
+### 17.2 D0 shell + SSE recovery
+
+`App.jsx` is the shell: `.tg-app` wrapper -> three-item nav (Live / Incidents / Metrics,
+`useState`, no router) -> the Stream Rail (`components/StreamRail.jsx`, 28px canvas,
+`requestAnimationFrame`, a static snapshot under `matchMedia('(prefers-reduced-motion:
+reduce)')`, hollow tick for `availability.shed`, a gap for `availability.fail_open`) ->
+`ThreatBand` (renders `threat_state` verbatim, text label + distinct ring glyph) ->
+`SystemBanner` (three monochrome `⌁` variants, copy verbatim from UIUX §6.10: advisory =
+`enforcement.advisory_mode`, rules-only = shed events in the last 60 s, fail-open =
+`availability.fail_open` seen within 60 s) -> the active screen -> the DC strip pinned bottom.
+
+`hooks/useEventStream.js`: `EventSource("/v1/stream")` -> on `error`, close it and start a
+5000 ms `setInterval` polling `GET /v1/stream/recent?after=<last attempt_uid>`; each poll also
+opens a fresh `EventSource`; on its `open` the interval is cleared and the mode returns to
+`live`. It never surfaces an error page -- it degrades to last-known-good. Backend:
+`InProcessEventBus` gains a bounded `deque(maxlen=200)` of published events and
+`recent(after)`; `_shed()` (`routes_score.py`) now publishes the exact event shape
+`_fail_open()` does, with `availability: {"fail_open": False, "alert": ..., "shed": True}`;
+the healthy path's `availability` gains `"shed": False` so the field is total.
+
+### 17.3 D3 -- read model, confirm, resolve (Decision 99)
+
+`GET /v1/incidents?state=live` -> newest live incident ids for the merchant.
+`GET /v1/incidents/{id}` -> the full read model (`incident` + `entities` + `timeline` +
+`enforcement` + `contributions` + `client_evidence`), joining `incident`, `incident_entity`,
+`tier_transition`, `enforcement_action`, the incident's newest `attempt_score.top_contributors`,
+and the newest matching `auth_attempt.client_evidence` (user agent truncated at 60 chars).
+Pseudonyms plus truncated real keys -- never a PAN, never a full card hash. `proposed_tier`
+(= `peak_tier`) and `in_force_tier` (= the incident's newest `attempt_score.decision`) are
+both returned. `POST /v1/incidents/{id}/confirm {action_id, tier}` -> `confirm_enforcement_
+action` UPDATE (flips `requires_confirmation -> 0`, sets `confirmed_by="operator"`,
+`applied_at=now`) + `PolicyEngine.set_confirmed_ceiling(entity, tier)`; a tier not present as
+a proposed row is 409. `POST /v1/incidents/{id}/resolve {resolution}` -> `release_enforcement_
+for_incident` + `resolve_incident` (sets `resolution`/`resolved_by`/`closed_at`,
+`state='CLOSED'`) + `clear_confirmed_ceiling` for every entity. Auth is `X-Tollgate-Key` via
+`resolve_merchant_id_cached`; an incident that is not the caller's is 404. Reads use a
+read-only connection; the two writes are direct (off the hot path). Confirmation affects
+SUBSEQUENT attempts only.
+
+The D3 screen (`screens/D3Incident.jsx`) renders five sections in order: narrative (plain
+text node, never `dangerouslySetInnerHTML`, 600-char hard cap, never told which backend
+produced it), action bar (`ConfirmButton` for a proposed `step_up`/`block` with the inline
+`Est. cost if wrong: ₹{C_FP(tier) × entity_count / 100}` line; plus "This was legitimate" ->
+resolve), evidence (detection timeline naming the detector at the alert node, `challenge`
+annotated `auto — ceiling reached`, proposed nodes `◌` + dashed connector at 0.6 opacity;
+contribution bars in grey with operator-facing names; entity table pseudonym-first),
+audit trail (every transition + trigger + pinned policy version), and the collapsed
+client-asserted panel (hatched `--tg-unverified` edge, inert text).
+
+### 17.4 D6 -- the committed artifact (Decision 100)
+
+`eval/harness.py::main` unconditionally calls `eval.d6.write_artifact(runs, out/"d6.json")`
+after `render(...)`. `eval/d6.py` is a serialiser over the `HarnessRun` object -- blocks 1,
+2, 3, 5, 6 read off the same objects `eval/report.py` formats; `block4_cost` adds the ROC
+convex hull curves at π₀/π₁, the F1-optimal and cost-optimal points, the sensitivity ribbon
+across π ∈ {1e-4, 1e-3, 1e-2}, the rupee gap and the regime-switch saving, plus an `inputs`
+block making the gap hand-checkable. `.gitignore` carries a `!eval/outputs/d6.json`
+exception. `screens/D6Metrics.jsx` `import`s the artifact at build time (no `fetch`, no
+`EventSource`) and renders all six blocks with inline-SVG charts -- no charting library.
+
+### 17.5 The Gemini narrator (Decision 98)
+
+`packages/narrator/gemini.py::call_gemini` POSTs `build_request_body(prompt)` (the only free
+string is `assemble_prompt(bundle)` -- closed vocabulary, charset gated) with a hard timeout,
+raising `GeminiError(reason)` for an HTTP/network fault. `services/scorer/scoring.py`:
+`_resolve_layer2` is unchanged (template narrative synchronous, `narrative_source="template"`);
+after the terminal `event_bus.publish`, if a narrative was just minted and
+`NARRATOR_ENABLED != "false"` and `NARRATOR_BACKEND == "gemini"` and `GEMINI_API_KEY` is set,
+`_maybe_dispatch_gemini` schedules `_run_gemini_narration` as an `asyncio` task (tracked on
+`ScorerState.gemini_tasks`). The task validates JSON -> exactly `{narrative,
+confidence_note}` -> `CHARSET_RE` -> ≤ 600 chars; on success it sets `incident.narrative` /
+`narrative_source="llm"` and spools `{"incident": ..., "narrator_call": [...]}`, on any
+failure it spools `{"narrator_call": [row with fallback_used=1, status naming the fault]}`.
+No exception ever escapes. The drainer guards `payload["attempt"]`/`["score"]` and drains
+`payload.get("narrator_call", [])`. One `narrator_call` row per narration attempt
+(Decision 97). `eval/corpus.py` forces `NARRATOR_ENABLED=false` for the replay.
+
+`call_gemini` takes an in-order `models` chain (Decision 101, default
+`gemini-2.0-flash, gemini-1.5-flash` from `GEMINI_MODELS`; the legacy `GEMINI_MODEL` is a
+one-element chain): a model returning HTTP 400/404 advances to the next, every other fault
+(429, timeout, connection, any other non-200) raises at once -- still one narration attempt,
+one row. `create_app`'s lifespan `finally` awaits any in-flight `gemini_tasks` (10 s bound,
+stragglers cancelled) then runs a final `drainer.drain_from_start()` so a row appended
+between the 50 ms poll and `drainer.stop()` still lands.
+
+### 17.6 Storefront S1/S3/S5/S6/S7
+
+`services/storefront/src/App.jsx` is a screen state machine (no router): S1 -> S2 ->
+{S5 | S3 | S6 | S7}; S3 passed -> S5, failed -> S6; S7 returns to S2. S4 is not built.
+`lib/outcome.js` is a direct port of `packages/contracts/decision.py`'s
+`resolve_client_outcome()` + `UI_ROUTING_TABLE` (`test_storefront_routing.py` pins the two
+equal). S2 owns the routing (`POST /v1/score` -> `resolveClientOutcome` -> `screenForOutcome`)
+and, behind `?demo=1`, shows a live `/v1/score` latency readout and a tier badge that renders
+`shed` and `fail_open`.
+
+### 17.7 Environment configuration (Decision 101)
+
+`packages/config/env.py` is the single place that names every scorer env var
+(`NARRATOR_BACKEND`, `NARRATOR_ENABLED`, `GEMINI_API_KEY`, `GEMINI_MODELS` / `GEMINI_MODEL`,
+`TOLLGATE_REDIS_URL`, `TOLLGATE_OUTCOME_SECRET`) with its default. `create_app`'s lifespan,
+before `ScorerState.build_default()`, calls `load_env_file()` -> `dotenv.load_dotenv(
+find_dotenv(usecwd=True), override=False)`: a repo-root `.env` (`cp .env.example .env`) is
+read, but a real process variable and any test `monkeypatch.setenv` still win. Missing file,
+missing `python-dotenv`, or `TOLLGATE_SKIP_DOTENV=1` -> silent no-op. The accessors are
+uncached `os.environ` reads (so `eval/corpus.py`'s runtime `NARRATOR_ENABLED` write and the
+narrator tests' post-import monkeypatching keep working). `validate_startup()` then logs a
+`config:` WARNING for a misconfigured narrator (backend `gemini` with no key, key with a
+non-`gemini` backend, unknown backend, disabled flag) -- the key value is never logged.
+`deps.py` / `routes_outcome.py` / `template.py` keep their direct `os.environ` reads; the
+`.env` load populates `os.environ` so they see the same values.

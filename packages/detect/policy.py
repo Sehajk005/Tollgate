@@ -321,10 +321,29 @@ class PolicyEngine:
     def __init__(self) -> None:
         self._current_tier: Dict[Tuple[str, str], Decision] = {}
         self._eligible_ordinal: Dict[str, int] = {}
+        # Source: Day-8 Plan Step 6 -- a per-entity ceiling an operator has
+        # EXPLICITLY confirmed on D3. Empty by default, so the ceiling is still
+        # `snapshot.auto_ceiling_tier` (challenge) for every entity no operator
+        # has touched (Threat Model §4/P1). In-memory dict lookup on the hot
+        # path -- no I/O, no latency change. Cleared by `clear()`
+        # (ReplayDriver.reset) and per-entity by `clear_confirmed_ceiling`
+        # (D3 "This was legitimate").
+        self._confirmed_ceiling: Dict[Tuple[str, str], Decision] = {}
 
     def clear(self) -> None:
         self._current_tier.clear()
         self._eligible_ordinal.clear()
+        self._confirmed_ceiling.clear()
+
+    def set_confirmed_ceiling(self, entity: EntityKey, tier: Decision) -> None:
+        """An operator confirmed `tier` for `entity` on D3 -- raise its ceiling
+        so subsequent attempts from it resolve at the confirmed tier."""
+        self._confirmed_ceiling[entity.as_tuple()] = tier
+
+    def clear_confirmed_ceiling(self, entity: EntityKey) -> None:
+        """The incident was resolved -- drop the confirmed ceiling so `entity`
+        returns to the `challenge` auto-ceiling on subsequent attempts."""
+        self._confirmed_ceiling.pop(entity.as_tuple(), None)
 
     def current_tier(self, entity: EntityKey) -> Decision:
         return self._current_tier.get(entity.as_tuple(), Decision.ALLOW)
@@ -396,8 +415,13 @@ class PolicyEngine:
         # 4. Rule floor -- rules raise, never lower (TRD §6.10).
         proposed = tier_max(l2_tier, rule_floor)
 
-        # 5. Auto-ceiling (P1). step_up / block are PROPOSED, never in force.
-        ceiling = snapshot.auto_ceiling_tier
+        # 5. Auto-ceiling (P1). step_up / block are PROPOSED, never in force --
+        #    UNLESS an operator has explicitly confirmed a higher ceiling for
+        #    THIS entity on D3 (Day-8 Plan Step 6). The default is still
+        #    `snapshot.auto_ceiling_tier` (challenge) for every entity no
+        #    operator has touched; only an explicit confirmation raises it, and
+        #    resolving the incident clears it again.
+        ceiling = self._confirmed_ceiling.get(entity.as_tuple(), snapshot.auto_ceiling_tier)
         in_force = apply_auto_ceiling(proposed, ceiling)
         requires_confirmation = _rank(proposed) > _rank(ceiling)
 

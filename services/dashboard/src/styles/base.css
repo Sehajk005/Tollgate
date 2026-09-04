@@ -1,0 +1,31 @@
+/*
+ * Day 8, Step 1 -- reset, focus ring, reduced motion. Source: UIUX v2 SS2.5
+ * (focus: 2px --tg-primary outline at 2px offset, never outline:none) and
+ * SS7 (the prefers-reduced-motion block, transcribed verbatim below).
+ */
+
+* { box-sizing: border-box; }
+
+html, body, #root { margin: 0; padding: 0; }
+
+body {
+  background: #0B0D10;
+  color: #F2F5F8;
+}
+
+/* SS2.5 -- every interactive element, always. Never `outline: none`. */
+.tg-app a:focus-visible,
+.tg-app button:focus-visible,
+.tg-app select:focus-visible,
+.tg-app input:focus-visible,
+.tg-app [tabindex]:focus-visible {
+  outline: 2px solid var(--tg-primary);
+  outline-offset: 2px;
+}
+
+/* UIUX v2 SS7 -- verbatim. The Stream Rail additionally renders a static
+   snapshot under this query (guarded in StreamRail.jsx via matchMedia). */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important; }
+}

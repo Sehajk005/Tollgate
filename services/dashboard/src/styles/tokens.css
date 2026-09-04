@@ -1,0 +1,81 @@
+/*
+ * Day 8, Step 1 -- design tokens (1 h hard cap). Source: UIUX v2 SS2.2
+ * (dashboard dark surfaces / text / interactive / threat state / system
+ * health) and SS2.4 (data-visualisation palette), transcribed verbatim.
+ *
+ * Plain CSS custom properties, NOT Tailwind: the repo has never carried a CSS
+ * framework (Day 1 excluded it explicitly, App Flow v2 records the exclusion),
+ * and introducing one on the hard-capped token hour is the "new framework not
+ * proven required" the planning constraints forbid. Every token SS2 names is
+ * expressible as a custom property. See Decisions.md (Day 8).
+ *
+ * Scoped to `.tg-app` so no dashboard colour ever leaks into a page that is
+ * not the dashboard, and so the storefront (`.st-app`, its own sheet) can
+ * never look related (UIUX v2 SS1).
+ */
+
+.tg-app {
+  /* Surfaces -- lightness IS the elevation system (UIUX v2 SS4.3). */
+  --tg-canvas:        #0B0D10;
+  --tg-surface-1:     #12161B;
+  --tg-surface-2:     #191E25;
+  --tg-surface-3:     #212832;
+  --tg-hairline:      #262E38;
+  --tg-hairline-firm: #38424F;
+
+  /* Text */
+  --tg-text:          #F2F5F8;
+  --tg-text-2:        #A7B0BC;
+  --tg-text-mute:     #6E7885;
+
+  /* Interactive -- indigo, and only indigo (UIUX v2 SS2.1). */
+  --tg-primary:       #6366F1;
+  --tg-primary-hover: #818CF8;
+  --tg-primary-press: #4F46E5;
+  --tg-primary-wash:  #6366F11F;
+  --tg-on-primary:    #FFFFFF;
+
+  /* Threat state -- tuned for near-black, not borrowed from light palettes. */
+  --tg-calm:          #6E7885;   /* neutral. Deliberately not green. */
+  --tg-elevated:      #E3B341;
+  --tg-attack:        #F85149;
+  --tg-resolved:      #3FB950;
+
+  --tg-elevated-wash: #E3B3411A;
+  --tg-attack-wash:   #F851491A;
+  --tg-resolved-wash: #3FB9501A;
+
+  /* System health -- monochrome by design (UIUX v2 SS2.1 / SS6.10). */
+  --tg-system-bg:     #212832;   /* = surface-3 */
+  --tg-system-edge:   #38424F;   /* = hairline-firm */
+  --tg-system-text:   #A7B0BC;
+  --tg-unverified:    #4A5460;   /* hatch/border for client-asserted data */
+  --tg-proposed:      #38424F;   /* dashed edge: exists, not in force */
+
+  /* Data-visualisation palette (UIUX v2 SS2.4). No categorical rainbow. */
+  --viz-series:       #A7B0BC;   /* the measured line -- neutral */
+  --viz-baseline:     #38424F;   /* learned-baseline reference band */
+  --viz-threshold:    #6366F1;   /* the operating threshold marker */
+  --viz-attack:       #F85149;   /* attack-labelled regions only */
+  --viz-grid:         #1A2028;
+  --viz-series-alt:   #A7B0BC;   /* SAME colour. Distinguished by dash, not hue. */
+  --viz-ribbon:       #A7B0BC14; /* 8% -- the prevalence sensitivity band */
+  --viz-flag:         #E3B341;   /* discriminability audit: features above 0.95 AUC */
+
+  /* Spacing base (UIUX v2 SS4.1) and radii (SS4.2). */
+  --tg-space-1: 4px;
+  --tg-space-2: 8px;
+  --tg-space-3: 12px;
+  --tg-space-4: 16px;
+  --tg-space-6: 24px;
+  --tg-space-8: 32px;
+  --tg-radius-xs: 4px;
+  --tg-radius-sm: 6px;
+  --tg-radius-md: 8px;
+  --tg-radius-lg: 12px;
+  --tg-radius-pill: 9999px;
+
+  background: var(--tg-canvas);
+  color: var(--tg-text);
+  min-height: 100vh;
+}

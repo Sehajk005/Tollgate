@@ -1,60 +1,42 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 
-// Day 1 ugly S2 checkout. Proves the pipe works; no polish (Impl Plan Day 1 /
-// UIUX section 10 v2.1 explicit exclusion list).
+import S1Product from "./screens/S1Product.jsx";
+import S2Checkout from "./screens/S2Checkout.jsx";
+import S3Challenge from "./screens/S3Challenge.jsx";
+import S5Confirmed from "./screens/S5Confirmed.jsx";
+import S6Blocked from "./screens/S6Blocked.jsx";
+import S7Throttle from "./screens/S7Throttle.jsx";
+
+// Day 8, Step 8 -- the storefront shell + screen state machine. No router
+// (App Flow SS2): S1 -> S2 -> {S5 | S3 | S6 | S7}; S3 passed -> S5, failed ->
+// S6; S7 returns to S2. S4 (3DS step-up) is NOT built -- it is unreachable
+// without a confirmed step_up (App Flow cut candidate #2).
+//
+// Kesar & Co.: light polarity, airy density, deep-green accent, a system font
+// stack. Styled as if built by a different company from the dashboard
+// (UIUX v2 SS1).
+
+const DEMO = new URLSearchParams(window.location.search).get("demo") === "1";
+
 export default function App() {
-  const [result, setResult] = useState(null);
-  const [error, setError] = useState(null);
-  const [submitting, setSubmitting] = useState(false);
+  const [screen, setScreen] = useState("S1");
 
-  async function submitCheckout() {
-    setSubmitting(true);
-    setError(null);
-    setResult(null);
-    try {
-      const resp = await fetch("/v1/score", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Tollgate-Key": import.meta.env.VITE_TOLLGATE_API_KEY || "",
-        },
-        body: JSON.stringify({
-          event_id: `evt-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-          card_hash: `card-${Math.random().toString(36).slice(2)}`,
-          // Fictional BIN (Day-2 Plan §D open item): 411111 is a real Visa
-          // test BIN; packages/simulator/identity.py's fictional pool uses
-          // the reserved 999xxx prefix, disjoint from any real IIN range.
-          bin: "999001",
-          amount_minor: 100,
-          currency: "INR",
-        }),
-      });
-      const body = await resp.json();
-      if (!resp.ok) {
-        setError(`HTTP ${resp.status}: ${JSON.stringify(body)}`);
-      } else {
-        setResult(body);
-      }
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setSubmitting(false);
-    }
-  }
+  const route = useCallback((screenId) => {
+    // S4 is not built; the auto-ceiling makes it unreachable anyway. Fall back
+    // to S5 defensively rather than dead-end.
+    setScreen(screenId === "S4" ? "S5" : screenId);
+  }, []);
 
   return (
-    <div style={{ fontFamily: "sans-serif", padding: "2rem", maxWidth: 480 }}>
-      <h1>Kesar &amp; Co. -- Checkout (Day 1)</h1>
-      <p>One product. One button. This is the walking skeleton.</p>
-      <button onClick={submitCheckout} disabled={submitting}>
-        {submitting ? "Submitting..." : "Pay Rs. 1.00"}
-      </button>
-      {result && (
-        <pre style={{ background: "#eee", padding: "1rem", marginTop: "1rem" }}>
-          {JSON.stringify(result, null, 2)}
-        </pre>
+    <div className="st-app">
+      {screen === "S1" && <S1Product onBuy={() => setScreen("S2")} />}
+      {screen === "S2" && <S2Checkout demo={DEMO} onRoute={route} />}
+      {screen === "S3" && (
+        <S3Challenge onPass={() => setScreen("S5")} onFail={() => setScreen("S6")} />
       )}
-      {error && <p style={{ color: "red" }}>{error}</p>}
+      {screen === "S5" && <S5Confirmed onDone={() => setScreen("S1")} />}
+      {screen === "S6" && <S6Blocked onRetry={() => setScreen("S1")} />}
+      {screen === "S7" && <S7Throttle onReturn={() => setScreen("S2")} />}
     </div>
   );
 }

@@ -1,0 +1,37 @@
+/*
+ * Day 8, Step 1 -- storefront tokens (light). Source: UIUX v2 SS2.3.
+ *
+ * A SEPARATE sheet from the dashboard's, deliberately: UIUX v2 SS1 requires
+ * the storefront and dashboard to look "as if built by two different
+ * companies". No Plex, no Tollgate indigo -- a deep retail green and a system
+ * font stack. Scoped to `.st-app`.
+ */
+
+.st-app {
+  --st-canvas:      #FFFFFF;
+  --st-canvas-soft: #F7F8FA;
+  --st-hairline:    #E4E8ED;
+  --st-ink:         #0D1520;
+  --st-ink-2:       #5A6674;
+  --st-ink-mute:    #8B96A3;
+  --st-action:      #111820;
+  --st-accent:      #1F6B4A;   /* deep green -- ordinary retail trust, never Tollgate's palette */
+  --st-error:       #B42318;
+
+  --st-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+
+  font-family: var(--st-font);
+  color: var(--st-ink);
+  background: var(--st-canvas);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+.st-app * { box-sizing: border-box; }
+
+.st-app a:focus-visible,
+.st-app button:focus-visible,
+.st-app input:focus-visible {
+  outline: 2px solid var(--st-accent);
+  outline-offset: 2px;
+}

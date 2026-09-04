@@ -130,3 +130,31 @@ class TestNarratorInjection:
         prompt = assemble_prompt(bundle)
         assert marker not in prompt
         assert CHARSET_RE.match(prompt)
+
+    def test_hostile_bytes_are_absent_from_the_assembled_gemini_request_body(self):
+        """Day-8 Plan Step 9 -- the injection defence extends to the exact
+        bytes Gemini would receive, not only the prompt string."""
+        import json as _json
+
+        from packages.narrator.gemini import build_request_body
+
+        fx = _fixture()
+        marker = fx["injection_marker"]
+        hostile_ua = fx["hostile_user_agent"]
+
+        store = InMemoryWindowStore()
+        rules = DayOneRules(store)
+        ctx = FeatureContext(
+            merchant_id="m", attempt_uid="a-1", ingest_ms=0, payload_digest="pd",
+            event_id="e-1", ip="203.0.113.7", ua_class="desktop_browser",
+            card_hash="c-1", bin="999123", amount_minor=1999, session_id="s-1",
+        )
+        evaluation = rules.evaluate_from_features(compute_features(store, ctx))
+        bundle = build_bundle(
+            entity_type="ip", pseudonym="ip_1", decision="challenge", evaluation=evaluation,
+        )
+        body = build_request_body(assemble_prompt(bundle))
+        serialised = _json.dumps(body)
+        assert marker not in serialised
+        assert hostile_ua not in serialised
+        assert "user_agent" not in serialised
